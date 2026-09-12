@@ -20,8 +20,11 @@ const LEVELS = ["Green", "Yellow", "Red", "Dark red"];
 const CLASS_NAMES = ["motorway", "trunk", "primary", "secondary", "tertiary",
                      "unclassified", "residential", "living street", "service"];
 const DEFAULTS = { g: 25, o: 55, r: 85, d: 105, jam: 4, beta: 4 };
-const MINOR_FADE = [11.4, 13.0];   // zoom range the side streets fade in over
-const INTRO_MS = 550;              // how long a freshly loaded part takes to appear
+const MINOR_FADE = [10.4, 11.6];   // zoom range the side streets fade in over
+const MAJOR_MS = 240;              // arterial network fades in this fast
+const CASCADE_MS = 850;            // side streets grow outward over this long
+const REVEAL_BAND = 0.22;          // width of the travelling edge of the cascade
+const REVEAL_WAIT_MS = 2500;       // start revealing anyway if the data never reports ready
 const EASE_MS = 420;               // eased travel when values jump rather than slide
 const MODEL_LAYERS = ["model-minor", "model-major"];
 const OURS = new Set(["dim", "traffic", ...MODEL_LAYERS]);
@@ -35,8 +38,10 @@ const state = {
   layers: [], activeLayers: new Set(), layerData: {}, layerOpacity: 0.9,
   theme: "light", showMap: true, labels: true, dim: 0, origBg: null, pendingApply: false,
   traffic: { show: false, opacity: 1, pure: true },
+  // intro and reveal default to 1 = fully visible. Nothing may ever leave a
+  // layer at 0 without an animation loop running that is guaranteed to finish.
   model: { show: true, which: "all", opacity: 1, ready: false, minorReady: false,
-           intro: { major: 0, minor: 0 } },
+           intro: { major: 1, minor: 1 }, reveal: { major: 1, minor: 1 } },
   dimPredicted: true,
   colourBy: "level", lineWidth: 1, minCls: 7, lodMinor: true,
   weights: { g: 25, o: 55, r: 85, d: 105 }, jam: 4, beta: 4,
@@ -101,22 +106,34 @@ function widthExpr(minor) {
     10, 0.5 * m, 12, 0.9 * m, 14, 1.7 * m, 16, 3 * m, 18, 6 * m];
 }
 
-/* Opacity carries three separate ideas at once:
-   - `intro`, a one-off fade so a part that has just finished loading appears
-     rather than snapping into existence;
-   - a zoom ramp for the side streets, so they arrive gradually instead of all
+/* Opacity carries four separate ideas at once:
+   - `intro`, a quick fade so a part that has just loaded appears rather than
+     snapping into existence;
+   - `reveal`, the cascade: each road carries `o`, its distance out from the
+     arterial network, and a travelling band sweeps o from 0 to 1 so the side
+     streets grow off the main roads like capillaries off an artery;
+   - a zoom ramp for the side streets, so they arrive gradually rather than all
      switching on at one zoom level;
    - a dimming of predicted roads, so what Google measured always reads as the
      primary layer and our inference as an addition on top of it. */
 function opacityExpr(part) {
   const base = state.model.opacity * state.model.intro[part];
-  const perFeature = state.dimPredicted
+  let perFeature = state.dimPredicted
     ? ["case", ["==", ["get", "s"], 0], base, base * 0.55]
     : base;
+
+  const progress = state.model.reveal[part];
+  if (progress < 1) {
+    const hi = progress * (1 + REVEAL_BAND);      // roads at or past this are still hidden
+    const lo = hi - REVEAL_BAND;                  // roads at or before this are fully in
+    perFeature = ["*", perFeature,
+      ["interpolate", ["linear"], ["get", "o"], lo, 1, hi, 0]];
+  }
+
   if (part === "minor" && state.lodMinor) {
-    // A "zoom" expression has to be the outermost one, so the per-feature
-    // dimming rides in the interpolate's output stops rather than multiplying
-    // the whole thing, which MapLibre rejects.
+    // A "zoom" expression has to be the outermost one, so everything
+    // per-feature rides in the interpolate's output stops rather than
+    // multiplying the whole thing, which MapLibre rejects.
     return ["interpolate", ["linear"], ["zoom"], MINOR_FADE[0], 0, MINOR_FADE[1], perFeature];
   }
   return perFeature;
@@ -176,28 +193,52 @@ function ensureLayers() {
 function addModelPart(part) {
   const minor = part === "minor";
   const src = `model-${part}-src`;
-  state.model.intro[part] = 0;
   // maxzoom 14 on the source keeps client-side tiling cheap; lines stay crisp
   // above it because vectors are re-projected, not resampled.
   map.addSource(src, { type: "geojson", data: `/model.geojson?part=${part}`,
     maxzoom: 14, buffer: 32, tolerance: 0.375 });
   map.addLayer({ id: `model-${part}`, type: "line", source: src,
-    minzoom: minor && state.lodMinor ? MINOR_FADE[0] - 0.4 : 0,
+    minzoom: minor && state.lodMinor ? MINOR_FADE[0] - 0.2 : 0,
     filter: modelFilter(),
     layout: { "line-cap": "round", "line-join": "round",
               visibility: state.model.show ? "visible" : "none" },
     paint: { "line-color": colourExpr(), "line-width": widthExpr(minor),
              "line-opacity": opacityExpr(part) } });
+  startReveal(part);
 }
 
-function fadeInPart(part) {
-  if (state.model.intro[part] > 0) return;
-  const t0 = performance.now();
+/* One self-contained animation per part. It waits for the data to be ready,
+   but only up to REVEAL_WAIT_MS, and it always ends by putting the layer back
+   to fully visible. There is no path that leaves a layer hidden. */
+function settleReveal(part) {
+  state.model.intro[part] = 1;
+  state.model.reveal[part] = 1;
+  applyModelOpacity();
+}
+function startReveal(part) {
+  const layerId = `model-${part}`;
+  const srcId = `model-${part}-src`;
+  const cascading = part === "minor";
+  const dur = cascading ? CASCADE_MS : MAJOR_MS;
+  if (cascading) state.model.reveal.minor = 0;
+  else state.model.intro.major = 0;
+  applyModelOpacity();
+
+  const queued = performance.now();
+  let begun = 0;
   const step = (now) => {
-    const k = Math.min(1, (now - t0) / INTRO_MS);
-    state.model.intro[part] = k * k * (3 - 2 * k);        // smoothstep
+    if (!map.getLayer(layerId)) { settleReveal(part); return; }   // style reloaded under us
+    if (!begun) {
+      const ready = map.getSource(srcId) && map.isSourceLoaded(srcId);
+      if (!ready && now - queued < REVEAL_WAIT_MS) { requestAnimationFrame(step); return; }
+      begun = now;
+    }
+    const k = Math.min(1, (now - begun) / dur);
+    if (cascading) state.model.reveal.minor = k;
+    else state.model.intro.major = k * k * (3 - 2 * k);           // smoothstep
     applyModelOpacity();
     if (k < 1) requestAnimationFrame(step);
+    else settleReveal(part);
   };
   requestAnimationFrame(step);
 }
@@ -211,12 +252,9 @@ function releaseMinor() {
   ensureLayers();
 }
 map.on("sourcedata", (e) => {
-  for (const part of ["major", "minor"]) {
-    const id = `model-${part}-src`;
-    if (e.sourceId === id && map.getSource(id) && map.isSourceLoaded(id)) {
-      fadeInPart(part);
-      if (part === "major") releaseMinor();
-    }
+  if (e.sourceId === "model-major-src" && map.getSource("model-major-src")
+      && map.isSourceLoaded("model-major-src")) {
+    releaseMinor();
   }
 });
 
@@ -269,7 +307,7 @@ function applyModel() {
     const id = `model-${part}`;
     if (!map.getLayer(id)) continue;
     map.setLayoutProperty(id, "visibility", state.model.show ? "visible" : "none");
-    map.setLayerZoomRange(id, part === "minor" && state.lodMinor ? MINOR_FADE[0] - 0.4 : 0, 24);
+    map.setLayerZoomRange(id, part === "minor" && state.lodMinor ? MINOR_FADE[0] - 0.2 : 0, 24);
   }
   applyModelOpacity();
 }
@@ -489,7 +527,7 @@ async function loadModelInfo() {
       `${m.lines.toLocaleString()} roads · ${m.observed.toLocaleString()} observed (${pct}%) · ` +
       `${m.predicted.toLocaleString()} predicted<br>` +
       `${m.edges.toLocaleString()} directed edges · ${(m.bytes / 1048576).toFixed(1)} MB from ${m.weights}`;
-    setTimeout(() => { releaseMinor(); fadeInPart("major"); }, 5000);   // if a source never settles
+    setTimeout(releaseMinor, 3500);          // in case the major source never reports ready
   } else {
     state.model.show = false;
     state.traffic.show = true;
@@ -758,8 +796,8 @@ async function reloadModel() {
     for (const part of ["major", "minor"]) {
       const src = map.getSource(`model-${part}-src`);
       if (src) {
-        state.model.intro[part] = 0;
         src.setData(`/model.geojson?part=${part}&v=${v}`);
+        startReveal(part);
       }
     }
     applyModel();
@@ -817,16 +855,21 @@ document.addEventListener("keydown", (e) => {
 
 /* ═════════════════════════ status bar ═════════════════════════ */
 
-function niceScale(metres) {
-  const pow = Math.pow(10, Math.floor(Math.log10(metres)));
-  const n = ([1, 2, 5, 10].find((m) => metres <= m * pow) || 10) * pow;
-  return n >= 1000 ? `${n / 1000} km` : `${Math.round(n)} m`;
+function distance(metres) {
+  return metres >= 1000 ? `${(metres / 1000).toFixed(metres < 10000 ? 1 : 0)} km`
+                        : `${Math.round(metres / 10) * 10} m`;
 }
 map.on("move", () => {
   const c = map.getCenter();
-  const mpp = 156543.03392 * Math.cos((c.lat * Math.PI) / 180) / Math.pow(2, map.getZoom());
+  // MapLibre defines zoom against 512 px tiles, so ground metres per CSS pixel
+  // is half the familiar 256 px figure. Using the 256 constant made the scale
+  // readout report twice the real distance.
+  const mpp = 78271.516964 * Math.cos((c.lat * Math.PI) / 180) / Math.pow(2, map.getZoom());
+  // report the ground width actually on screen: unambiguous, and it needs no
+  // drawn bar to be meaningful
+  const across = distance(mpp * map.getCanvas().clientWidth);
   $("coords").textContent =
-    `${c.lat.toFixed(5)}, ${c.lng.toFixed(5)}  ·  z${map.getZoom().toFixed(1)}  ·  ${niceScale(mpp * 90)}`;
+    `${c.lat.toFixed(5)}, ${c.lng.toFixed(5)}  ·  z${map.getZoom().toFixed(1)}  ·  ${across} across`;
 });
 
 /* ═════════════════════════ boot ═════════════════════════ */

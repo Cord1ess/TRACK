@@ -30,6 +30,9 @@ is never hidden behind a clear direction.
 Each feature carries the raw ingredients rather than a colour:
 
     i  edge id of the direction `w` came from
+    o  reveal order, 0 on the arterial network rising to 1 far out in the
+       side streets, so the map can grow the network outward rather than
+       switching it on all at once
     w  weight on the default 25/55/85/105 scale (measured if either way was)
     j  edge id of the other direction
     wb that direction's weight, absent if one-way
@@ -49,21 +52,58 @@ change on disk:
     output/traffic/complete.csv    weight + source per edge (falls back to observed.csv)
 """
 
+import bisect
 import csv
 import gzip
+import heapq
 import json
 import threading
+from collections import defaultdict
 from pathlib import Path
 
 CLASS_ORDER = ["motorway", "trunk", "primary", "secondary", "tertiary",
                "unclassified", "residential", "living_street", "service"]
 MAJOR_MAX_RANK = 4          # motorway .. tertiary
 COORD_DP = 5                # ~1.1 m, finer than the traffic lines we decoded
+REVEAL_SPAN_M = 1200.0      # distance from a main road at which reveal order reaches 1
 
 
 def class_rank(highway: str) -> int:
     base = (highway or "").replace("_link", "")
     return CLASS_ORDER.index(base) if base in CLASS_ORDER else CLASS_ORDER.index("unclassified")
+
+
+def reveal_order(edges: list, is_major) -> dict:
+    """Road-network distance in metres from the nearest arterial road, per node.
+
+    A multi-source Dijkstra seeded at every node that touches a major road, so
+    the value grows as you walk away from the main network. That is the order
+    the map reveals in: arteries first, then the streets hanging off them, then
+    the streets hanging off those."""
+    adj = defaultdict(list)
+    seeds = set()
+    for e in edges:
+        u, v, w = e["u"], e["v"], max(float(e.get("length_m", 0.0)), 1.0)
+        adj[u].append((v, w))
+        adj[v].append((u, w))
+        if is_major(e):
+            seeds.add(u)
+            seeds.add(v)
+    dist = {n: 0.0 for n in seeds}
+    heap = [(0.0, n) for n in seeds]
+    heapq.heapify(heap)
+    while heap:
+        d, n = heapq.heappop(heap)
+        if d > dist.get(n, float("inf")):
+            continue
+        if d >= REVEAL_SPAN_M:                     # past the span, ordering stops mattering
+            continue
+        for m, w in adj[n]:
+            nd = d + w
+            if nd < dist.get(m, float("inf")):
+                dist[m] = nd
+                heapq.heappush(heap, (nd, m))
+    return dist
 
 
 class ModelData:
@@ -125,6 +165,9 @@ class ModelData:
                 rows[int(r["edge_id"])] = r
         self._check_pairing(g, rows)
 
+        order_from = reveal_order(g["edges"],
+                                  lambda e: class_rank(e.get("highway", "")) <= MAJOR_MAX_RANK)
+
         # collapse each two-way pair into one drawn line, keeping both weights
         pairs: dict[tuple, dict] = {}
         order: list[tuple] = []
@@ -135,11 +178,13 @@ class ModelData:
             if r is None or len(geom) < 2:
                 continue
             key = (min(e["u"], e["v"]), max(e["u"], e["v"]), len(geom))
+            far = min(order_from.get(e["u"], REVEAL_SPAN_M),
+                      order_from.get(e["v"], REVEAL_SPAN_M))
             rec = {"id": eid, "w": float(r["weight"]),
                    "obs": r.get("source", "observed") == "observed",
                    "c": float(r.get("coverage", 0) or 0), "geom": geom,
                    "h": class_rank(e.get("highway", "")),
-                   "f": float(e.get("free_flow_kmph", 30) or 30)}
+                   "f": float(e.get("free_flow_kmph", 30) or 30), "far": far}
             prev = pairs.get(key)
             if prev is None:
                 pairs[key] = rec
@@ -150,6 +195,14 @@ class ModelData:
                 pairs[key] = rec
             else:
                 prev["other"] = rec
+
+        # Rank the side streets by how far out they are rather than using the raw
+        # distance: two thirds of them sit within a couple of hundred metres of a
+        # main road, so the raw value would reveal most of the city in the first
+        # moment and then trickle. Ranking makes the wave sweep at a steady rate.
+        minor_far = sorted(pairs[k]["far"] for k in order
+                           if pairs[k]["h"] > MAJOR_MAX_RANK)
+        span = max(len(minor_far) - 1, 1)
 
         feats_major, feats_minor = [], []
         observed = 0
@@ -162,6 +215,8 @@ class ModelData:
                 "i": rec["id"], "w": round(rec["w"], 1), "s": 0 if rec["obs"] else 1,
                 "c": round(max(rec["c"], other["c"] if other else 0), 2),
                 "h": rec["h"], "f": round(rec["f"], 1),
+                "o": 0.0 if rec["h"] <= MAJOR_MAX_RANK
+                     else round(bisect.bisect_left(minor_far, rec["far"]) / span, 3),
             }
             if other:
                 props["j"] = other["id"]
