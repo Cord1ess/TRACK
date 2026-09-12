@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TRACK Visualizer</title>
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+<link href="/static/style.css" rel="stylesheet">
+</head>
+<body>
+<div id="map"></div>
+
+<!-- ───────────────────────────── top bar ───────────────────────────── -->
+<header id="topbar">
+  <div class="brand">TRACK<span>Dhaka traffic</span></div>
+
+  <label class="field">
+    <span>Capture</span>
+    <select id="capture"></select>
+  </label>
+
+  <div class="grow"></div>
+
+  <div class="seg small" id="theme" role="group" aria-label="Theme">
+    <button data-theme="light" class="on" title="Light (1)">Light</button>
+    <button data-theme="dark" title="Dark (2)">Dark</button>
+  </div>
+  <button class="icon" id="helpBtn" title="Keyboard shortcuts (?)" aria-label="Shortcuts">
+    <svg viewBox="0 0 16 16"><path d="M6 6.2a2 2 0 1 1 2.7 1.9c-.45.2-.7.6-.7 1.05v.35" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="8" cy="12" r=".95" fill="currentColor"/></svg>
+  </button>
+  <button class="icon" id="dockBtn" title="Hide panel (\)" aria-label="Toggle panel">
+    <svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10 2.5v11" stroke="currentColor" stroke-width="1.4"/></svg>
+  </button>
+</header>
+
+<!-- ─────────────────────── map controls (top left) ─────────────────────── -->
+<div id="mapctl">
+  <button class="icon" id="zoomIn" title="Zoom in" aria-label="Zoom in">
+    <svg viewBox="0 0 16 16"><path d="M8 3.5v9M3.5 8h9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+  </button>
+  <button class="icon" id="zoomOut" title="Zoom out" aria-label="Zoom out">
+    <svg viewBox="0 0 16 16"><path d="M3.5 8h9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+  </button>
+  <div class="sep"></div>
+  <button class="icon" id="fitBtn" title="Fit to capture (F)" aria-label="Fit to capture">
+    <svg viewBox="0 0 16 16"><path d="M2.5 6V2.5H6M13.5 6V2.5H10M2.5 10v3.5H6M13.5 10v3.5H10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="icon" id="northBtn" title="Reset bearing (N)" aria-label="Reset north">
+    <svg viewBox="0 0 16 16"><path d="M8 2.2l3.1 11.6L8 11l-3.1 2.8z" fill="currentColor"/></svg>
+  </button>
+  <button class="icon" id="inspectBtn" title="Inspect roads (I)" aria-label="Inspect roads" aria-pressed="false">
+    <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.2 10.2L14 14" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+  </button>
+</div>
+
+<!-- ───────────────────────────── side dock ───────────────────────────── -->
+<aside id="dock">
+  <nav class="tabs" role="tablist">
+    <button data-tab="layers" class="on" role="tab">Layers</button>
+    <button data-tab="style" role="tab">Style</button>
+    <button data-tab="weights" role="tab">Weights</button>
+  </nav>
+
+  <!-- ── Layers ── -->
+  <section class="tabpanel on" data-panel="layers">
+    <div class="group">
+      <div class="grouphead">
+        <h3>Google capture</h3>
+        <label class="switch"><input type="checkbox" id="showTraffic" checked><span></span></label>
+      </div>
+      <p class="hint" id="capInfo">no captures found</p>
+      <div class="rows">
+        <div class="row"><span>Pure colours</span>
+          <label class="switch sm"><input type="checkbox" id="pure" checked><span></span></label>
+        </div>
+        <label class="row slider"><span>Opacity</span><em id="ov">100%</em>
+          <input id="opacity" type="range" min="0" max="1" step="0.05" value="1">
+        </label>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="grouphead">
+        <h3>TRACK model</h3>
+        <label class="switch"><input type="checkbox" id="showModel"><span></span></label>
+      </div>
+      <p class="hint" id="modelInfo">checking…</p>
+      <div class="rows">
+        <div class="seg full" id="modelWhich">
+          <button data-which="all" class="on">All</button>
+          <button data-which="observed">Observed</button>
+          <button data-which="predicted">Predicted</button>
+        </div>
+        <label class="row slider"><span>Opacity</span><em id="mov">100%</em>
+          <input id="modelOpacity" type="range" min="0" max="1" step="0.05" value="1">
+        </label>
+      </div>
+      <button class="btn" id="abFlip">A/B compare <kbd>C</kbd></button>
+    </div>
+
+    <div class="group">
+      <div class="grouphead"><h3>Algorithm layers</h3></div>
+      <div id="layers" class="rows"><p class="hint">none yet — pipeline outputs appear here</p></div>
+      <label class="row slider"><span>Opacity</span><em id="lov">90%</em>
+        <input id="layerOpacity" type="range" min="0" max="1" step="0.05" value="0.9">
+      </label>
+    </div>
+  </section>
+
+  <!-- ── Style ── -->
+  <section class="tabpanel" data-panel="style">
+    <div class="group">
+      <div class="grouphead"><h3>Colour roads by</h3></div>
+      <div class="seg full" id="colourBy">
+        <button data-mode="level" class="on">Level</button>
+        <button data-mode="delay">Delay</button>
+        <button data-mode="speed">Speed</button>
+      </div>
+      <p class="hint" id="colourHint">Traffic level on the measured Google ramp.</p>
+    </div>
+
+    <div class="group">
+      <div class="grouphead"><h3>Base map</h3>
+        <label class="switch"><input type="checkbox" id="showMap" checked><span></span></label>
+      </div>
+      <div class="rows">
+        <div class="row"><span>Labels</span>
+          <label class="switch sm"><input type="checkbox" id="labels" checked><span></span></label>
+        </div>
+        <label class="row slider"><span>Fade map</span><em id="dimv">0%</em>
+          <input id="dim" type="range" min="0" max="1" step="0.05" value="0">
+        </label>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="grouphead"><h3>Road lines</h3></div>
+      <div class="rows">
+        <label class="row slider"><span>Width</span><em id="lwv">1.0x</em>
+          <input id="lineWidth" type="range" min="0.4" max="3" step="0.1" value="1">
+        </label>
+        <label class="row slider"><span>Smallest road</span><em id="minclsv">living street</em>
+          <input id="minCls" type="range" min="0" max="7" step="1" value="7">
+        </label>
+        <div class="row"><span>Fade in minor roads</span>
+          <label class="switch sm"><input type="checkbox" id="lodMinor" checked><span></span></label>
+        </div>
+        <div class="row"><span>Dim predicted roads</span>
+          <label class="switch sm"><input type="checkbox" id="dimPredicted" checked><span></span></label>
+        </div>
+      </div>
+      <p class="hint">Side streets fade in between z11 and z13, which keeps panning smooth when
+        zoomed out. Dimming keeps what Google measured reading as the primary layer, with our
+        predictions added underneath it.</p>
+    </div>
+  </section>
+
+  <!-- ── Weights ── -->
+  <section class="tabpanel" data-panel="weights">
+    <div class="group">
+      <div class="grouphead"><h3>Traffic weights</h3></div>
+      <p class="hint">What each traffic level is worth. Weight ÷ 100 is the volume/capacity ratio the cost model uses.</p>
+      <div class="rows" id="weightRows">
+        <label class="row slider wgt" data-k="g"><span><i style="background:#16e098"></i>Green</span><em>25</em>
+          <input type="range" min="0" max="140" step="1" value="25"></label>
+        <label class="row slider wgt" data-k="o"><span><i style="background:#ffcf43"></i>Yellow</span><em>55</em>
+          <input type="range" min="0" max="140" step="1" value="55"></label>
+        <label class="row slider wgt" data-k="r"><span><i style="background:#d1352b"></i>Red</span><em>85</em>
+          <input type="range" min="0" max="140" step="1" value="85"></label>
+        <label class="row slider wgt" data-k="d"><span><i style="background:#a92727"></i>Dark red</span><em>105</em>
+          <input type="range" min="0" max="140" step="1" value="105"></label>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="grouphead"><h3>Slowdown curve</h3></div>
+      <p class="hint">Travel time = free flow x (1 + a x (v/c)^b). <b>Jam factor</b> pins a, so dark red runs that many times slower than an empty road.</p>
+      <div class="rows">
+        <label class="row slider"><span>Jam factor</span><em id="jamv">4.0x</em>
+          <input id="jam" type="range" min="1.2" max="10" step="0.1" value="4"></label>
+        <label class="row slider"><span>Curve steepness b</span><em id="betav">4.0</em>
+          <input id="beta" type="range" min="1" max="8" step="0.1" value="4"></label>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="grouphead"><h3>Result</h3></div>
+      <table class="calc"><thead><tr><th>Level</th><th>Weight</th><th>v/c</th><th>Slower</th><th>50 km/h</th></tr></thead>
+        <tbody id="calcBody"></tbody></table>
+      <button class="btn" id="resetWeights">Reset to defaults</button>
+      <button class="btn" id="reloadModel">Reload map data <kbd>R</kbd></button>
+      <p class="hint">Live on the map only. <b>Reload</b> pulls the data again and repaints from the
+        current settings, for when the map looks out of step or the pipeline has been re-run.
+        To bake values in, re-run the pipeline with the matching options.</p>
+    </div>
+  </section>
+</aside>
+
+<!-- ───────────────────────────── legend ───────────────────────────── -->
+<div id="legend"><div class="swatches" id="legendItems"></div></div>
+
+<!-- ───────────────────────────── timeline ───────────────────────────── -->
+<div id="timeline">
+  <button class="icon play" id="playBtn" title="Play (space)" aria-label="Play">
+    <svg id="playIcon" viewBox="0 0 16 16"><path d="M5 3.2l7.2 4.8-7.2 4.8z" fill="currentColor"/></svg>
+  </button>
+  <div class="track" id="track" tabindex="0" role="slider" aria-label="Time">
+    <div class="days" id="trackDays"></div>
+    <div class="marks" id="trackMarks"></div>
+    <div class="head" id="trackHead"></div>
+  </div>
+  <div class="readout">
+    <strong id="slotLabel">—</strong>
+    <span id="slotState">no data</span>
+  </div>
+</div>
+
+<!-- ───────────────────────── status + inspector ───────────────────────── -->
+<div id="status"><span id="coords">—</span></div>
+
+<div id="inspect" hidden>
+  <button class="icon close" id="inspectClose" aria-label="Close">
+    <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+  </button>
+  <div id="inspectBody"></div>
+</div>
+
+<div id="help" hidden>
+  <div class="sheet">
+    <h2>Keyboard shortcuts</h2>
+    <dl>
+      <dt>T</dt><dd>Google capture on/off</dd>
+      <dt>M</dt><dd>TRACK model on/off</dd>
+      <dt>C</dt><dd>A/B compare, flip between them</dd>
+      <dt>P</dt><dd>Pure colours on the capture</dd>
+      <dt>L</dt><dd>Labels</dd>
+      <dt>B</dt><dd>Base map</dd>
+      <dt>F</dt><dd>Fit to capture</dd>
+      <dt>I</dt><dd>Inspect a road</dd>
+      <dt>N</dt><dd>Reset bearing</dd>
+      <dt>R</dt><dd>Reload map data</dd>
+      <dt>1 / 2</dt><dd>Light / dark theme</dd>
+      <dt>\</dt><dd>Hide the panel</dd>
+      <dt>Space</dt><dd>Play or pause the timeline</dd>
+      <dt>⇧ ← →</dt><dd>Step the timeline (plain arrows pan the map)</dd>
+    </dl>
+    <button class="btn" id="helpClose">Close</button>
+  </div>
+</div>
+
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

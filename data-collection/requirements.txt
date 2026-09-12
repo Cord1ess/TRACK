@@ -1,0 +1,3 @@
+Pillow>=10.0
+numpy>=1.26
+huggingface_hub>=0.25   # only for storage/ (optional remote copy)

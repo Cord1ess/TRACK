@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Captured traffic tiles. Regenerable in about 13 minutes with
+#   cd data-collection && python collector/capture.py --name <name>
+# and they are Google map content, so they stay out of version control.
+data-collection/captures/*
+!data-collection/captures/.gitkeep
+
+# Everything the pipeline derives: road graph, decoded weights, reports.
+# Rebuild with: cd algorithms && python pipeline.py
+algorithms/output/*
+!algorithms/output/.gitkeep
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

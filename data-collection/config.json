@@ -1,0 +1,75 @@
+{
+  "zoom": 17,
+  "tile_px": 256,
+  "bbox": {
+    "north": 23.902086,
+    "south": 23.711736,
+    "east": 90.499678,
+    "west": 90.326774
+  },
+  "rate": 8,
+  "workers": 6,
+  "retries": 4,
+  "min_coverage_pct": 95,
+  "min_free_gb": 1.0,
+  "fill_gaps": true,
+  "incidents": false,
+  "block_tiles": 16,
+  "block_format": "rgba",
+  "palette": {
+    "green": [
+      [
+        22,
+        224,
+        152
+      ],
+      [
+        4,
+        156,
+        101
+      ]
+    ],
+    "orange": [
+      [
+        255,
+        207,
+        67
+      ],
+      [
+        245,
+        192,
+        37
+      ]
+    ],
+    "red": [
+      [
+        209,
+        53,
+        43
+      ],
+      [
+        242,
+        78,
+        66
+      ],
+      [
+        152,
+        66,
+        58
+      ]
+    ],
+    "darkred": [
+      [
+        169,
+        39,
+        39
+      ],
+      [
+        112,
+        35,
+        35
+      ]
+    ]
+  },
+  "palette_tolerance": 50
+}
