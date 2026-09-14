@@ -74,11 +74,39 @@ fill. Slots that have a capture are marked; drag, scroll or arrow along it, or p
 to sweep the week. With one capture there is one marked slot, and the readout says how
 many of the 672 are collected.
 
-The server re-reads the graph and the weight table whenever they change on disk, so
-re-running `python pipeline.py` in `../algorithms/` and refreshing the page is enough.
-Until that pipeline has run, the panel says so and the controls stay disabled. A weight
-table built against a different graph is refused rather than drawn, because edge ids
-restart at 0 on every build and would otherwise line up against the wrong roads.
+The server notices when the graph or the weight table change on disk and rebuilds in
+the background once the files stop changing, so re-running `python pipeline.py` in
+`../algorithms/` is enough: the page checks every five seconds and swaps the new data in
+without a reload. Until that pipeline has run, the panel says so and the controls stay
+disabled. A weight table built against a different graph is refused rather than drawn,
+because edge ids restart at 0 on every build and would otherwise line up against the
+wrong roads.
+
+## Reliability
+
+The map is built so that whatever the controls say is on screen stays on screen. A
+browser suite drives the app through every control, theme switches, capture switches,
+server restarts and a few hundred random actions while checking every 60 ms that no road
+layer has gone missing, hidden, or stuck part-way through an animation.
+
+- **Theme switches carry our data across.** The basemap changes underneath; the road
+  layers and their data are never removed or downloaded again. Both basemap styles are
+  fetched once, so quick repeated switches cannot land out of order.
+- **Nothing is torn down to change what it shows.** A capture switch swaps the tile
+  address on the existing layer, and new model data replaces the old only once it has
+  loaded, so the old roads stay drawn in the meantime.
+- **Layer changes are never skipped.** They wait for the style itself to be ready, not
+  for every tile to finish loading, which while panning is almost never.
+- **Animations cannot strand a layer.** Each reveal has a timer that forces it fully
+  visible, survives exceptions, and finishes at once in a background tab.
+- **A watchdog repairs drift every second**, re-adding anything missing and re-applying
+  every control.
+- **The server never serves nothing.** Until a rebuild succeeds, the last complete data
+  keeps being served and the panel says so; a half-written or missing input file cannot
+  blank the map. Failed loads in the page retry with backoff while the drawn roads stay.
+
+Model data is versioned by content, so an unchanged payload costs a cached read or a 304
+rather than a fresh 1.7 MB download.
 
 ## API
 
@@ -88,7 +116,7 @@ restart at 0 on every build and would otherwise line up against the wrong roads.
 | `GET /api/captures/<name>` | full manifest |
 | `GET /tiles/<name>/<z>/<x>/<y>.png` | traffic tile (transparent if none); `?clean=1` for pure colours |
 | `GET /api/model` | whether our derived data is loaded, and how much of it |
-| `GET /model.geojson` | our data as vector features, gzipped: `w` weight, `s` source, `c` coverage, `h` road class, `f` free-flow km/h |
+| `GET /model.geojson?part=major\|minor&v=<version>` | our data as gzipped vector features: `w` weight, `s` source, `c` coverage, `h` road class, `f` free-flow km/h, `o` reveal order. Cached for good when `v` names the served version; otherwise revalidated by ETag |
 | `GET /api/layers` | available GeoJSON layers |
 | `GET /layers/<id>` | one layer |
 

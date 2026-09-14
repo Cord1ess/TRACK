@@ -50,14 +50,26 @@ change on disk:
 
     output/graph/dhaka.json        the road graph (geometry)
     output/traffic/complete.csv    weight + source per edge (falls back to observed.csv)
+
+Serving through a rebuild
+-------------------------
+Once something good has been served, a request is never answered with nothing.
+Changed inputs are rebuilt in the background, and only after the files have
+stopped changing for SETTLE_S: a pipeline run rewrites them over several
+seconds, and reading them mid-write would publish half a city. Until the new
+build succeeds the previous complete payload keeps being served, so a failed or
+half-finished run can never blank the map. Every payload carries `version`, a
+hash of its content, which the browser uses to cache it and to notice new data.
 """
 
 import bisect
 import csv
 import gzip
+import hashlib
 import heapq
 import json
 import threading
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -109,14 +121,26 @@ def reveal_order(edges: list, is_major) -> dict:
 class ModelData:
     """The graph plus the weight table, kept as ready-to-send payloads."""
 
+    SETTLE_S = 1.5    # inputs must stop changing this long before a rebuild starts
+    RETRY_S = 5.0     # after a failed build, wait this long before retrying the same files
+
     def __init__(self, graph_path: Path, csv_path: Path):
         self.graph_path, self.csv_path = Path(graph_path), Path(csv_path)
-        self.stamp = None
-        self.lock = threading.Lock()
-        self.ready = False
+        self.lock = threading.Lock()          # guards the published snapshot below
+        self.build_lock = threading.Lock()    # at most one build at a time
+        self.payloads: dict[str, bytes] = {}  # gzipped GeoJSON per part, always complete
+        self.counts: dict = {}
+        self.version = ""                     # content hash of the published payloads
+        self.stamp = None                     # input mtimes the published payloads were built from
+        self.seen = None                      # input mtimes seen on the latest request
         self.error = ""
-        self.counts = {}
-        self.payloads: dict[str, bytes] = {}
+        self.building = False
+        self._pending = None                  # (stamp, first seen) while waiting for files to settle
+        self._failed = None                   # (stamp, when) of the last failed build
+
+    @property
+    def ready(self) -> bool:
+        return bool(self.payloads)
 
     def _stamp(self):
         try:
@@ -125,20 +149,72 @@ class ModelData:
             return None
 
     def ensure(self) -> bool:
+        """True when there is complete data to serve; also picks up changed inputs."""
         st = self._stamp()
-        if st is None:
-            self.ready, self.error = False, "graph or weights file missing"
-            return False
+        now = time.monotonic()
         with self.lock:
-            if st == self.stamp and self.ready:
-                return True
-            try:
-                self._load()
-                self.stamp = st
-                self.ready, self.error = True, ""
-            except Exception as e:          # a half-written file during a pipeline run
-                self.ready, self.error = False, f"{type(e).__name__}: {e}"
-            return self.ready
+            self.seen = st
+            have, current = bool(self.payloads), self.stamp
+            if st is not None and st == current and not self.building:
+                self.error = ""
+        if st is None:
+            with self.lock:
+                self.error = "graph or weights file missing" + (
+                    "; serving the last complete data" if have else "")
+            return have
+        if st == current:
+            return have
+        recently_failed = (self._failed is not None and self._failed[0] == st
+                           and now - self._failed[1] < self.RETRY_S)
+        if not have:
+            # nothing to serve yet, so build in the foreground: this request waits for it
+            if recently_failed:
+                return False
+            with self.build_lock:
+                with self.lock:
+                    if self.payloads and self.stamp == st:
+                        return True
+                self._build_and_publish(st)
+            with self.lock:
+                return bool(self.payloads)
+        # good data is published: keep serving it and rebuild once the files settle
+        if self._pending is None or self._pending[0] != st:
+            self._pending = (st, now)
+            return True
+        if now - self._pending[1] < self.SETTLE_S or recently_failed:
+            return True
+        if self.build_lock.acquire(blocking=False):
+            threading.Thread(target=self._build_in_background, args=(st,), daemon=True).start()
+        return True
+
+    def _build_in_background(self, st) -> None:
+        try:
+            self._build_and_publish(st)
+        finally:
+            self.build_lock.release()
+
+    def _build_and_publish(self, st) -> None:
+        with self.lock:
+            self.building = True
+        try:
+            payloads, counts = self._build()
+            if self._stamp() != st:
+                raise RuntimeError("inputs changed while being read; retrying once they settle")
+            digest = hashlib.sha1()
+            for part in ("major", "minor"):
+                digest.update(payloads[part])
+            with self.lock:
+                self.payloads, self.counts = payloads, counts
+                self.version, self.stamp, self.error = digest.hexdigest()[:12], st, ""
+            self._failed = None
+            self._pending = None
+        except Exception as e:          # the published data stays exactly as it was
+            with self.lock:
+                self.error = f"{type(e).__name__}: {e}"
+            self._failed = (st, time.monotonic())
+        finally:
+            with self.lock:
+                self.building = False
 
     def _check_pairing(self, g: dict, rows: dict) -> None:
         """Edge ids restart at 0 on every graph build, so a weight table from an
@@ -157,7 +233,7 @@ class ModelData:
             raise ValueError(f"{self.csv_path.name} has {len(rows)} rows but the graph has "
                              f"{len(g['edges'])} edges. Re-run the pipeline.")
 
-    def _load(self) -> None:
+    def _build(self) -> tuple[dict, dict]:
         g = json.loads(self.graph_path.read_text(encoding="utf-8"))
         rows = {}
         with self.csv_path.open(encoding="utf-8") as f:
@@ -232,33 +308,44 @@ class ModelData:
         if not order:
             raise ValueError("no edge ids in common between the graph and the weight table")
 
-        self.payloads = {}
+        payloads: dict[str, bytes] = {}
         for part, feats in (("major", feats_major), ("minor", feats_minor),
                             ("all", feats_major + feats_minor)):
             raw = json.dumps({"type": "FeatureCollection", "features": feats},
                              separators=(",", ":")).encode("utf-8")
-            self.payloads[part] = gzip.compress(raw, 6)
+            payloads[part] = gzip.compress(raw, 6, mtime=0)   # mtime=0: same data, same bytes
 
         assert all(pairs[k]["obs"] or not pairs[k].get("other", {}).get("obs") for k in order), \
             "a predicted direction outranked a measured one"
-        self.counts = {
+        counts = {
             "edges": len(g["edges"]), "lines": len(order),
             "observed": observed, "predicted": len(order) - observed,
             "major": len(feats_major), "minor": len(feats_minor),
             "weights": self.csv_path.name,
-            "bytes": len(self.payloads["all"]),
-            "bytes_major": len(self.payloads["major"]),
+            "bytes": len(payloads["all"]),
+            "bytes_major": len(payloads["major"]),
         }
+        return payloads, counts
+
+    def payload(self, part: str = "all") -> tuple[bytes | None, str]:
+        """(gzipped GeoJSON, version), both from one consistent snapshot."""
+        self.ensure()
+        with self.lock:
+            if not self.payloads:
+                return None, ""
+            return self.payloads.get(part if part in self.payloads else "all"), self.version
 
     def geojson(self, part: str = "all") -> bytes | None:
-        if not self.ensure():
-            return None
-        return self.payloads.get(part if part in self.payloads else "all")
+        return self.payload(part)[0]
 
     def info(self) -> dict:
         ok = self.ensure()
-        return {"ready": ok, "error": self.error, "graph": str(self.graph_path),
-                "weights_path": str(self.csv_path), **(self.counts if ok else {})}
+        with self.lock:
+            pending = self.seen is not None and self.seen != self.stamp
+            return {"ready": ok, "version": self.version, "stale": bool(ok and self.error),
+                    "building": self.building, "pending": bool(ok and pending),
+                    "error": self.error, "graph": str(self.graph_path),
+                    "weights_path": str(self.csv_path), **(self.counts if ok else {})}
 
 
 def discover(output_dir: Path) -> ModelData:

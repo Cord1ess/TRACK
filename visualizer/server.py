@@ -19,6 +19,9 @@ slippy-map tile layer instead of a screenshot:
                                             and <capture>/layers (algorithm outputs)
     GET /layers/<relative path>.geojson     one layer
     GET /api/model                          what TRACK's own traffic data looks like
+    GET /api/graph                          the road graph itself: junction and edge counts
+    GET /graph.geojson[?part=nodes|links]   junctions as points, directed edges as lines,
+                                            for looking at the network A* actually walks
     GET /model.geojson[?part=major|minor]   that data as vector features (gzipped), so the
                                             browser can re-colour and re-cost every road
                                             live as the weight sliders move. Major roads
@@ -39,11 +42,12 @@ import threading
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import numpy as np
 from PIL import Image
 
+import graph_data as graph_mod
 import model as model_mod
 
 HERE = Path(__file__).resolve().parent
@@ -52,6 +56,7 @@ CAPTURES = (HERE.parent / "data-collection" / "captures").resolve()
 OUTPUT = (HERE.parent / "algorithms" / "output").resolve()
 MIN_ZOOM = 8   # lowest zoom the server will build; the UI reads it from /api/config
 MODEL: "model_mod.ModelData | None" = None   # TRACK's own decoded + predicted traffic
+GRAPH: "graph_mod.GraphData | None" = None   # the road graph: junctions and directed edges
 
 _LOCK = threading.Lock()
 
@@ -303,19 +308,43 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def _send(self, code: int, body: bytes, ctype: str, cache: str = "no-store",
-              encoding: str | None = None) -> None:
+              encoding: str | None = None, headers: dict | None = None) -> None:
         self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
+        if code != 304:
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            if encoding:
+                self.send_header("Content-Encoding", encoding)
         self.send_header("Cache-Control", cache)
-        if encoding:
-            self.send_header("Content-Encoding", encoding)
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
-        self.wfile.write(body)
+        if code != 304:
+            self.wfile.write(body)
 
     def _json(self, obj, code: int = 200) -> None:
         self._send(code, json.dumps(obj).encode("utf-8"), "application/json")
+
+    def _vector(self, service, query: str, default_part: str) -> None:
+        """A versioned, gzipped GeoJSON payload with conditional-request support."""
+        q = parse_qs(query or "")
+        part = (q.get("part") or [default_part])[0]
+        asked = (q.get("v") or [""])[0]
+        data, version = service.payload(part) if service else (None, "")
+        if data is None:
+            self._json({"error": (service.error if service else "not configured") or "no data"}, 503)
+            return
+        etag = f'"{version}-{part}"'
+        # A URL that names the version being served can never change, so the browser
+        # may keep it for good. Anything else revalidates, and an unchanged payload
+        # then costs a 304 instead of megabytes.
+        cache = "public, max-age=31536000, immutable" if asked == version else "no-cache"
+        if etag in (self.headers.get("If-None-Match") or ""):
+            self._send(304, b"", "", cache, headers={"ETag": etag})
+        else:
+            self._send(200, data, "application/geo+json", cache, encoding="gzip",
+                       headers={"ETag": etag})
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -352,15 +381,11 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/model":
                 self._json(MODEL.info() if MODEL else {"ready": False, "error": "not configured"})
             elif path == "/model.geojson":
-                part = "all"
-                for token in (parsed.query or "").split("&"):
-                    if token.startswith("part="):
-                        part = token[5:]
-                data = MODEL.geojson(part) if MODEL else None
-                if data is None:
-                    self._json({"error": (MODEL.error if MODEL else "not configured")}, 404)
-                else:
-                    self._send(200, data, "application/geo+json", "no-store", encoding="gzip")
+                self._vector(MODEL, parsed.query, "all")
+            elif path == "/api/graph":
+                self._json(GRAPH.info() if GRAPH else {"ready": False, "error": "not configured"})
+            elif path == "/graph.geojson":
+                self._vector(GRAPH, parsed.query, "nodes")
             elif path == "/api/layers":
                 self._json(list_layers())
             elif path.startswith("/layers/"):
@@ -381,7 +406,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    global CAPTURES, OUTPUT, MODEL
+    global CAPTURES, OUTPUT, MODEL, GRAPH
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--captures", type=Path, default=CAPTURES)
@@ -391,6 +416,7 @@ def main() -> int:
     CAPTURES, OUTPUT = args.captures.resolve(), args.output.resolve()
     capture_zoom.cache_clear()
     MODEL = model_mod.discover(OUTPUT)
+    GRAPH = graph_mod.discover(OUTPUT)
     if args.build_pyramid:
         build_pyramid(args.build_pyramid)
         build_pyramid(args.build_pyramid, clean=True)
@@ -416,7 +442,14 @@ def main() -> int:
               f"{mi['bytes'] / 1048576:.1f} MB gzipped "
               f"({mi['bytes_major'] / 1048576:.1f} MB for the major roads)\n", flush=True)
     else:
-        print(f"  model:    not available ({mi.get('error')}) - run the algorithms pipeline\n", flush=True)
+        print(f"  model:    not available ({mi.get('error')}) - run the algorithms pipeline", flush=True)
+    gi = GRAPH.info()
+    if gi.get("ready"):
+        print(f"  graph:    {gi['nodes']} nodes ({gi['junctions']} junctions, "
+              f"{gi['cut_points']} cut points), {gi['links']} directed edges, "
+              f"{gi['bytes'] / 1048576:.1f} MB gzipped\n", flush=True)
+    else:
+        print(f"  graph:    not available ({gi.get('error')})\n", flush=True)
     # On Windows SO_REUSEADDR lets a second server bind a port that is already
     # in use; the old process keeps answering and you debug code that is not
     # running. Refuse instead, and say which process to kill.

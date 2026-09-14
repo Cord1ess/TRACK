@@ -58,6 +58,7 @@
   <nav class="tabs" role="tablist">
     <button data-tab="layers" class="on" role="tab">Layers</button>
     <button data-tab="style" role="tab">Style</button>
+    <button data-tab="graph" role="tab">Graph</button>
     <button data-tab="weights" role="tab">Weights</button>
   </nav>
 
@@ -149,9 +150,84 @@
           <label class="switch sm"><input type="checkbox" id="dimPredicted" checked><span></span></label>
         </div>
       </div>
-      <p class="hint">Side streets fade in between z11 and z13, which keeps panning smooth when
+      <p class="hint">Side streets fade in between z9.6 and z10.6, which keeps panning smooth when
         zoomed out. Dimming keeps what Google measured reading as the primary layer, with our
         predictions added underneath it.</p>
+    </div>
+  </section>
+
+  <!-- ── Graph ── -->
+  <section class="tabpanel" data-panel="graph">
+    <div class="group">
+      <div class="grouphead">
+        <h3>Road graph</h3>
+        <label class="switch"><input type="checkbox" id="showGraph"><span></span></label>
+      </div>
+      <p class="hint" id="graphInfo">checking…</p>
+      <div class="rows">
+        <div class="row"><span>Junctions</span>
+          <label class="switch sm"><input type="checkbox" id="showNodes" checked><span></span></label>
+        </div>
+        <div class="row"><span>Directed edges</span>
+          <label class="switch sm"><input type="checkbox" id="showLinks" checked><span></span></label>
+        </div>
+        <div class="row"><span>Hide 150 m cut points</span>
+          <label class="switch sm"><input type="checkbox" id="hideCuts" checked><span></span></label>
+        </div>
+        <div class="row"><span>Direction arrows</span>
+          <label class="switch sm"><input type="checkbox" id="showArrows" checked><span></span></label>
+        </div>
+      </div>
+      <p class="hint">A third of the nodes are not junctions: they are where long roads were cut
+        every 150 m. Hiding them leaves the real intersections.</p>
+    </div>
+
+    <div class="group">
+      <div class="grouphead"><h3>Breathing</h3>
+        <label class="switch"><input type="checkbox" id="breathe" checked><span></span></label>
+      </div>
+      <p class="hint">A pulse travels along every edge in its direction of travel, so one-way
+        streets and the direction of each carriageway read at a glance.</p>
+      <label class="row slider"><span>Speed</span><em id="breathev">1.0x</em>
+        <input id="breatheSpeed" type="range" min="0.2" max="3" step="0.1" value="1">
+      </label>
+      <label class="row slider"><span>Depth</span><em id="breathedv">60%</em>
+        <input id="breatheDepth" type="range" min="0" max="1" step="0.05" value="0.6">
+      </label>
+    </div>
+
+    <div class="group">
+      <div class="grouphead"><h3>Colour edges by</h3></div>
+      <div class="seg full" id="linkColour">
+        <button data-mode="class" class="on">Class</button>
+        <button data-mode="direction">Direction</button>
+        <button data-mode="length">Length</button>
+        <button data-mode="flat">Flat</button>
+      </div>
+      <div class="grouphead" style="margin-top:12px"><h3>Colour junctions by</h3></div>
+      <div class="seg full" id="nodeColour">
+        <button data-mode="degree" class="on">Degree</button>
+        <button data-mode="kind">Kind</button>
+        <button data-mode="class">Class</button>
+        <button data-mode="flat">Flat</button>
+      </div>
+      <div class="seg full" id="graphPalette" style="margin-top:12px">
+        <button data-palette="vivid" class="on">Vivid</button>
+        <button data-palette="cool">Cool</button>
+        <button data-palette="warm">Warm</button>
+        <button data-palette="mono">Mono</button>
+      </div>
+      <div class="rows">
+        <label class="row slider"><span>Junction size</span><em id="nodesizev">1.0x</em>
+          <input id="nodeSize" type="range" min="0.4" max="3" step="0.1" value="1">
+        </label>
+        <label class="row slider"><span>Edge width</span><em id="linkwidthv">1.0x</em>
+          <input id="linkWidth" type="range" min="0.4" max="3" step="0.1" value="1">
+        </label>
+        <label class="row slider"><span>Opacity</span><em id="graphopacityv">100%</em>
+          <input id="graphOpacity" type="range" min="0" max="1" step="0.05" value="1">
+        </label>
+      </div>
     </div>
   </section>
 
@@ -236,7 +312,8 @@
       <dt>L</dt><dd>Labels</dd>
       <dt>B</dt><dd>Base map</dd>
       <dt>F</dt><dd>Fit to capture</dd>
-      <dt>I</dt><dd>Inspect a road</dd>
+      <dt>I</dt><dd>Inspect a road or junction</dd>
+      <dt>G</dt><dd>Road graph on/off</dd>
       <dt>N</dt><dd>Reset bearing</dd>
       <dt>R</dt><dd>Reload map data</dd>
       <dt>1 / 2</dt><dd>Light / dark theme</dd>
