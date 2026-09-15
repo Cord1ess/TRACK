@@ -16,6 +16,11 @@ Only the newest --keep captures with status ok or partial are included;
 --prune deletes the others from the captures folder. The page is marked
 static, so app.js reads data/manifest.json and polls it for a new version
 instead of talking to a server.
+
+An existing site folder is reused: a capture's tiles never change once
+written, so only tiles for a capture the site does not have yet are copied,
+and tiles for captures no longer kept are deleted. Everything else is
+rewritten every time. --fresh forces a build from empty.
 """
 
 import argparse
@@ -25,6 +30,7 @@ import os
 import shutil
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -76,6 +82,36 @@ def copy_tiles(name: str, out: Path) -> int:
     return n
 
 
+def sync_tiles(caps: list[dict], out: Path) -> None:
+    """Copy tiles for captures the site does not have yet and delete the ones
+    it should no longer serve. A capture's tiles never change once written, so
+    a capture already on disk is left alone: on a rebuild only the new capture
+    is copied instead of all of them."""
+    wanted = {c["name"] for c in caps}
+    for kind in ("tiles", "tiles-clean"):
+        base = out / kind
+        if not base.exists():
+            continue
+        for d in base.iterdir():
+            if d.is_dir() and d.name not in wanted:
+                shutil.rmtree(d)
+                print(f"  tiles   dropped {d.name}", flush=True)
+    for c in caps:
+        if (out / "tiles" / c["name"]).exists() and (out / "tiles-clean" / c["name"]).exists():
+            print(f"  tiles   {c['name']}: already on the site", flush=True)
+            continue
+        n = copy_tiles(c["name"], out)
+        print(f"  tiles   {c['name']}: {n} files", flush=True)
+
+
+def clear_stale(out: Path) -> None:
+    """Everything except the tiles is rewritten every build, so remove the old
+    copies first: versioned vector payloads would otherwise pile up."""
+    for p in (out / "data").glob("*.json"):
+        p.unlink()
+    shutil.rmtree(out / "data" / "layers", ignore_errors=True)
+
+
 def write_vector(service, parts: tuple, out: Path, prefix: str) -> dict:
     """The versioned payloads as plain JSON; the CDN compresses them on the way out.
     Without data the manifest carries ready: false and the page says so."""
@@ -113,11 +149,27 @@ def folder_size(p: Path) -> int:
     return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
 
 
+class Stage:
+    """Times each part of the build, so a slow build says where."""
+
+    def __init__(self):
+        self.seconds = {}
+
+    @contextmanager
+    def __call__(self, name: str):
+        t = time.time()
+        try:
+            yield
+        finally:
+            self.seconds[name] = round(self.seconds.get(name, 0) + time.time() - t, 1)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, default=HERE.parent / "site")
     ap.add_argument("--keep", type=int, default=3, help="newest captures to include")
     ap.add_argument("--prune", action="store_true", help="delete captures not included")
+    ap.add_argument("--fresh", action="store_true", help="rebuild from empty instead of reusing the site folder")
     ap.add_argument("--captures", type=Path, help="captures folder (default: ../data-collection/captures)")
     ap.add_argument("--output", type=Path, help="pipeline output folder (default: ../algorithms/output)")
     args = ap.parse_args()
@@ -133,16 +185,17 @@ def main() -> int:
         graph_json.write_bytes(gzip.decompress(packed.read_bytes()))
         print(f"  graph   unpacked {packed.name}", flush=True)
 
+    stage = Stage()
     out = args.out.resolve()
-    if out.exists():
-        shutil.rmtree(out)
-    (out / "data").mkdir(parents=True)
+    if args.fresh:
+        shutil.rmtree(out, ignore_errors=True)
+    (out / "data").mkdir(parents=True, exist_ok=True)
+    clear_stale(out)
     copy_app(out)
 
     caps = pick_captures(args.keep)
-    for c in caps:
-        n = copy_tiles(c["name"], out)
-        print(f"  tiles   {c['name']}: {n} files", flush=True)
+    with stage("tiles"):
+        sync_tiles(caps, out)
     if args.prune:
         keep = {c["name"] for c in caps}
         for d in server.CAPTURES.iterdir():
@@ -150,13 +203,16 @@ def main() -> int:
                 shutil.rmtree(d)
                 print(f"  pruned  {d.name}", flush=True)
 
-    model = write_vector(model_mod.discover(server.OUTPUT), ("major", "minor"), out / "data", "model")
+    with stage("model"):
+        model = write_vector(model_mod.discover(server.OUTPUT), ("major", "minor"), out / "data", "model")
     if model.get("ready"):
         print(f"  model   version {model.get('version')}: {model.get('lines', 0):,} lines", flush=True)
-    graph = write_vector(graph_mod.discover(server.OUTPUT), ("nodes", "links"), out / "data", "graph")
+    with stage("graph"):
+        graph = write_vector(graph_mod.discover(server.OUTPUT), ("nodes", "links"), out / "data", "graph")
     if graph.get("ready"):
         print(f"  graph   version {graph.get('version')}: {graph.get('links', 0):,} segments", flush=True)
-    layers = copy_layers(out)
+    with stage("layers"):
+        layers = copy_layers(out)
     print(f"  layers  {len(layers)}", flush=True)
 
     # on Actions the environment names the repository, so the page can link
@@ -170,6 +226,7 @@ def main() -> int:
         "captures": caps, "model": model, "graph": graph, "layers": layers,
     }
     (out / "data" / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
+    print("  time    " + ", ".join(f"{k} {v}s" for k, v in stage.seconds.items()), flush=True)
     print(f"  site    {folder_size(out) / 1e6:.0f} MB, {sum(1 for _ in out.rglob('*') if _.is_file()):,} files "
           f"-> {out}  ({time.time() - t0:.0f}s)")
     return 0

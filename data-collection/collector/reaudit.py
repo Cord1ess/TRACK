@@ -2,11 +2,11 @@
 
     python collector/reaudit.py --name <capture-name> [--config config.json]
 
-Nothing is fetched or re-encoded: tiles/ and RGBA blocks/ do not depend on the
-palette. Rewritten: tiles.csv.gz, the per-block traffic_frac/classes, and the
-manifest's content fields, palette, checks and status. Run it after changing
-the palette in config.json (e.g. Google restyled the traffic layer) so the
-stored statistics describe the stored pixels again.
+Nothing is fetched or re-encoded: the stored tiles do not depend on the
+palette. Rewritten: tiles.csv.gz and the manifest's content fields, palette,
+checks and status. Run it after changing the palette in config.json (e.g.
+Google restyled the traffic layer) so the stored statistics describe the
+stored pixels again.
 Exit codes: 0 ok/partial, 2 failed, 3 bad config or no such capture.
 """
 
@@ -18,7 +18,6 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-import analyze  # noqa: E402
 import checks  # noqa: E402
 import grid  # noqa: E402
 import tiles as tiles_mod  # noqa: E402
@@ -47,16 +46,6 @@ def reaudit(out_dir: Path, cfg: dict) -> dict:
     print(f"  {len(tiles)} tiles on disk, {len(expected)} expected", flush=True)
 
     audit = tiles_mod.audit_tiles(tiles, expected, out_dir, cfg)            # rewrites tiles.csv.gz
-    if manifest.get("block_format", "rgba") == "palette":                   # quantised blocks embed the palette
-        blocks = tiles_mod.build_blocks(tiles, zoom, expected, out_dir, cfg, tp)
-    else:                                                                   # RGBA blocks: only their stats change
-        blocks = manifest["blocks"]
-        for b in blocks:
-            members = [(x, y) for x in range(b["x0"], b["x0"] + b["n"])
-                       for y in range(b["y0"], b["y0"] + b["n"]) if (x, y) in expected]
-            canvas, _, _ = tiles_mod.block_canvas(tiles, members, b["x0"], b["y0"], tp, b["n"])
-            content = analyze.traffic_fraction(canvas, cfg["palette"], cfg["palette_tolerance"], sample=1024)
-            b["traffic_frac"], b["classes"] = content["traffic_frac"], content["classes"]
 
     ck = manifest.get("checks")
     if not isinstance(ck, dict):                                            # older manifests stored a list
@@ -64,10 +53,14 @@ def reaudit(out_dir: Path, cfg: dict) -> dict:
     ck["traffic_content"] = {"ok": audit["tiles_nonempty"] > 0,
                              "detail": f"{audit['tiles_nonempty']} non-empty tiles, mean traffic frac {audit['mean_traffic_frac']}"}
     ck["palette_match"] = checks.palette_match_check(audit)
-    ck["files"] = checks.verify_files(out_dir, blocks)
+    ck["files"] = checks.verify_files(out_dir, tiles, zoom, tp)
+    manifest.pop("blocks", None)                                            # captures before 2026-09-15 had mosaics
+    for stale in ("block_tiles_consistent",):                               # and checks that described them
+        ck.pop(stale, None)
+    ck["georef"] = checks.georef_check(set(tiles), zoom, manifest["bbox"], manifest["tile_range"])
     manifest.update({"palette": cfg["palette"], "palette_tolerance": cfg["palette_tolerance"], "tile_px": tp,
                      "tiles_nonempty": audit["tiles_nonempty"], "mean_traffic_frac": audit["mean_traffic_frac"],
-                     "blocks": blocks, "audit": audit, "reaudited_utc": utc_now()})
+                     "audit": audit, "reaudited_utc": utc_now()})
     manifest["warnings"] = [f"{k}: {v['detail']}" for k, v in ck.items() if not v["ok"]]
     manifest["status"] = decide_status(ck)
     mp.write_text(json.dumps(manifest, indent=1), encoding="utf-8")

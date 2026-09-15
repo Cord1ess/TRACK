@@ -60,7 +60,7 @@ visualizer/
 
 Capture folder `data-collection/captures/<name>/`: `manifest.json` (zoom,
 bbox, tile_range, coverage_pct, captured_utc, status, checks),
-`tiles/z{z}_{x}_{y}.png`, `blocks/`, `tiles.csv.gz`.
+`tiles/z{z}_{x}_{y}.png`, `tiles.csv.gz`.
 
 Road graph `algorithms/output/graph/dhaka.json`: `graph_id`, `nodes: {id:
 [lon, lat]}`, `edges: [{id, u, v, length_m, highway, lanes, oneway,

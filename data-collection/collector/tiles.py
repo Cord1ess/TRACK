@@ -1,5 +1,5 @@
 """Tile bookkeeping for the TRACK collector: coverage against the expected
-tile set, a per-tile audit file, and block mosaics for compact archiving.
+tile set and a per-tile audit file.
 """
 
 import csv
@@ -9,10 +9,8 @@ import io
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
 
 import analyze
-from grid import tile_bounds
 
 
 def coverage(expected: set, received: set) -> dict:
@@ -69,60 +67,3 @@ def audit_tiles(tiles: dict, expected: set, out_dir: Path, cfg: dict) -> dict:
             "mean_traffic_frac": round(sum_traffic / n, 5),
             "coloured_px": coloured, "matched_px": matched,
             "palette_match_frac": round(matched / coloured, 4) if coloured else 1.0}
-
-
-def block_origin(x: int, y: int, n: int) -> tuple[int, int]:
-    return (x // n) * n, (y // n) * n
-
-
-def block_canvas(tiles: dict, members, bx: int, by: int, tile_px: int, n: int) -> tuple:
-    """Mosaic the member tiles of one n x n block whose origin tile is (bx, by).
-    Returns (canvas, tiles present, [x, y] of tiles missing or unreadable)."""
-    canvas = Image.new("RGBA", (n * tile_px, n * tile_px), (0, 0, 0, 0))
-    present, missing = 0, []
-    for (x, y) in sorted(members):
-        data = tiles.get((x, y))
-        if data is None:
-            missing.append([x, y])
-            continue
-        try:
-            tile = analyze.load_image(data).convert("RGBA")
-        except Exception:
-            missing.append([x, y])
-            continue
-        canvas.paste(tile, ((x - bx) * tile_px, (y - by) * tile_px))
-        present += 1
-    return canvas, present, missing
-
-
-def build_blocks(tiles: dict, z: int, expected: set, out_dir: Path, cfg: dict,
-                 tile_px: int) -> list[dict]:
-    """Mosaic tiles into n x n tile blocks aligned to multiples of n. Returns
-    manifest entries with bounds, content statistics and hashes."""
-    n = cfg["block_tiles"]
-    fmt = cfg.get("block_format", "rgba")
-    blocks_dir = out_dir / "blocks"
-    blocks_dir.mkdir(parents=True, exist_ok=True)
-
-    groups: dict[tuple[int, int], list[tuple[int, int]]] = {}
-    for (x, y) in expected:
-        groups.setdefault(block_origin(x, y, n), []).append((x, y))
-
-    entries = []
-    for (bx, by), members in sorted(groups.items()):
-        canvas, present, missing = block_canvas(tiles, members, bx, by, tile_px, n)
-        content = analyze.traffic_fraction(canvas, cfg["palette"], cfg["palette_tolerance"], sample=1024)
-        img = analyze.quantize(canvas, cfg["palette"], cfg["palette_tolerance"]) if fmt == "palette" else canvas
-        raw = analyze.png_bytes(img)
-        name = f"z{z}_x{bx}_y{by}.png"
-        (blocks_dir / name).write_bytes(raw)
-        nb, sb = tile_bounds(bx, by, z), tile_bounds(bx + n - 1, by + n - 1, z)
-        entries.append({
-            "file": f"blocks/{name}", "z": z, "x0": bx, "y0": by, "n": n,
-            "tile_px": tile_px, "px": n * tile_px,
-            "bounds": {"north": nb["north"], "south": sb["south"], "west": nb["west"], "east": sb["east"]},
-            "tiles_expected": len(members), "tiles_present": present, "tiles_missing": missing,
-            "traffic_frac": content["traffic_frac"], "classes": content["classes"],
-            "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
-        })
-    return entries

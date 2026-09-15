@@ -51,10 +51,12 @@ jobs:
       - name: Install
         run: pip install -r data-collection/requirements.txt -r algorithms/requirements.txt
 
-      - name: Restore the previous captures
+      - name: Restore the previous captures and site
         uses: actions/cache/restore@v4
         with:
-          path: data-collection/captures
+          path: |
+            data-collection/captures
+            site
           key: captures-${{ github.run_id }}
           restore-keys: captures-
 
@@ -81,10 +83,12 @@ jobs:
         working-directory: data-collection
         run: python storage/upload.py "captures/${{ steps.capture.outputs.name }}"
 
-      - name: Keep the captures for the next run
+      - name: Keep the captures and site for the next run
         uses: actions/cache/save@v4
         with:
-          path: data-collection/captures
+          path: |
+            data-collection/captures
+            site
           key: captures-${{ github.run_id }}
 
       - uses: actions/configure-pages@v5

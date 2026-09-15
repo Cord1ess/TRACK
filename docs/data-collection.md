@@ -33,7 +33,6 @@ It uses four helpers in the same folder:
 captures/<name>/
   manifest.json      when, where, how many tiles, coverage, status
   tiles/             the 4,928 images
-  blocks/            the same images packed into 30 larger mosaics
   tiles.csv.gz       one line per tile: size, checksum, how much traffic
 ```
 

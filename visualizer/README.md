@@ -70,7 +70,11 @@ layer has gone missing, hidden or stuck part-way through an animation.
 
 ## Static site
 
-`build_site.py --out ../site --keep 3` writes:
+`build_site.py --out ../site --keep 3` writes the following. An existing site
+folder is reused: a capture's tiles never change once written, so only tiles
+for a capture the site does not have yet are copied and tiles for captures no
+longer kept are deleted. Everything else is rewritten every time, and `--fresh`
+rebuilds from empty.
 
 ```
 index.html, app.js, style.css

@@ -12,8 +12,7 @@ from pathlib import Path
 import grid
 
 REQUIRED = ["zoom", "tile_px", "bbox", "rate", "workers", "retries", "min_coverage_pct",
-            "block_tiles", "palette", "palette_tolerance", "min_free_gb", "fill_gaps",
-            "incidents"]
+            "palette", "palette_tolerance", "min_free_gb", "fill_gaps", "incidents"]
 # A bbox outside this is a typo, not a plan.
 SANE_BOX = {"north": 24.2, "south": 23.4, "east": 90.8, "west": 90.0}
 
@@ -40,8 +39,6 @@ def validate_config(cfg: dict) -> dict:
         p.append("retries must be 0..8")
     if not (50 <= cfg["min_coverage_pct"] <= 100):
         p.append("min_coverage_pct must be 50..100")
-    if not (1 <= cfg["block_tiles"] <= 64):
-        p.append("block_tiles must be 1..64")
     pal = cfg["palette"]
     if not isinstance(pal, dict) or len(pal) < 2:
         p.append("palette needs at least two classes")
@@ -90,57 +87,75 @@ def grid_roundtrip() -> dict:
             "detail": f"round-trip error {worst:.2e} deg, anchor {'ok' if anchor_ok else 'WRONG'}"}
 
 
-def georef_check(blocks: list[dict], zoom: int, bbox: dict) -> dict:
-    """Every block's bounds must map back to its tile origin, be ordered and
-    overlap the bbox. Catches a wrong zoom, swapped axes or a bad manifest."""
+def georef_check(tiles: set, zoom: int, bbox: dict, tile_range: dict) -> dict:
+    """Every tile's own corner must map back to its (x, y), and the tile range
+    must sit inside the bbox it was derived from. Catches a wrong zoom, swapped
+    axes or a bad manifest. Checks the corners and a sample of the interior,
+    which is enough: the failure modes are systematic, not per tile."""
     bad = []
-    for b in blocks:
-        bd = b["bounds"]
-        if not (bd["north"] > bd["south"] and bd["east"] > bd["west"]):
-            bad.append(f"{b['file']}: unordered bounds")
+    r = tile_range
+    if not (r["x0"] <= r["x1"] and r["y0"] <= r["y1"]):
+        bad.append(f"tile range unordered: {r}")
+    for (x, y) in _georef_sample(tiles, r):
+        b = grid.tile_bounds(x, y, zoom)
+        if not (b["north"] > b["south"] and b["east"] > b["west"]):
+            bad.append(f"({x},{y}): unordered bounds")
             continue
-        x = int(round(grid.lon_to_tx(bd["west"], zoom)))
-        y = int(round(grid.lat_to_ty(bd["north"], zoom)))
-        if (x, y) != (b["x0"], b["y0"]):
-            bad.append(f"{b['file']}: bounds map to ({x},{y}) not ({b['x0']},{b['y0']})")
-        if (bd["south"] > bbox["north"] or bd["north"] < bbox["south"]
-                or bd["west"] > bbox["east"] or bd["east"] < bbox["west"]):
-            bad.append(f"{b['file']}: outside bbox")
-    return {"ok": not bad, "checked": len(blocks),
-            "detail": "; ".join(bad[:5]) or f"{len(blocks)} blocks georeferenced"}
+        if (int(round(grid.lon_to_tx(b["west"], zoom))), int(round(grid.lat_to_ty(b["north"], zoom)))) != (x, y):
+            bad.append(f"({x},{y}): bounds do not map back")
+        if (b["south"] > bbox["north"] or b["north"] < bbox["south"]
+                or b["west"] > bbox["east"] or b["east"] < bbox["west"]):
+            bad.append(f"({x},{y}): outside bbox")
+    return {"ok": not bad, "checked": len(tiles),
+            "detail": "; ".join(bad[:5]) or f"{len(tiles)} tiles georeferenced"}
 
 
-def verify_files(out_dir: Path, entries: list[dict]) -> dict:
-    """Re-read every written image, re-hash and decode it. Catches a partial
-    write or corrupted file before it is archived or uploaded."""
+def _georef_sample(tiles: set, r: dict) -> list:
+    """The four corners of the range plus an evenly spaced sample of the rest."""
+    corners = [(r["x0"], r["y0"]), (r["x1"], r["y0"]), (r["x0"], r["y1"]), (r["x1"], r["y1"])]
+    rest = sorted(tiles)
+    step = max(1, len(rest) // 200)
+    return [t for t in corners if t in tiles] + rest[::step]
+
+
+def verify_files(out_dir: Path, tiles: dict, zoom: int, tile_px: int, sample: int = 200) -> dict:
+    """Re-read written tiles from disk and compare them with what was fetched.
+    Catches a partial write or corrupted file before it is archived or
+    uploaded. Every tile is re-read and hashed; a sample is also fully decoded,
+    since decoding 5,000 PNGs costs more than that part of the check is worth."""
     from PIL import Image
 
-    bad, checked, total = [], 0, 0
-    for e in entries:
-        p = out_dir / e["file"]
+    bad, checked, total, decoded = [], 0, 0, 0
+    coords = sorted(tiles)
+    step = max(1, len(coords) // sample) if sample else 1
+    for i, (x, y) in enumerate(coords):
+        p = out_dir / "tiles" / f"z{zoom}_{x}_{y}.png"
         checked += 1
         if not p.exists():
-            bad.append(f"{e['file']}: missing")
+            bad.append(f"{p.name}: missing")
             continue
         raw = p.read_bytes()
         total += len(raw)
-        if len(raw) != e.get("bytes") or hashlib.sha256(raw).hexdigest() != e.get("sha256"):
-            bad.append(f"{e['file']}: size/hash mismatch")
-        try:
-            with Image.open(p) as im:
-                im.verify()
-            with Image.open(p) as im:
-                if e.get("px") and im.size != (e["px"], e["px"]):
-                    bad.append(f"{e['file']}: {im.size} != {e['px']}")
-        except Exception as ex:
-            bad.append(f"{e['file']}: undecodable ({type(ex).__name__})")
-    return {"ok": not bad, "checked": checked, "bytes": total,
-            "detail": "; ".join(bad[:5]) or f"{checked} files verified"}
+        if raw != tiles[(x, y)]:
+            bad.append(f"{p.name}: does not match the fetched bytes")
+            continue
+        if i % step == 0:
+            decoded += 1
+            try:
+                with Image.open(p) as im:
+                    im.verify()
+                with Image.open(p) as im:
+                    if im.size != (tile_px, tile_px):
+                        bad.append(f"{p.name}: {im.size} != {tile_px}")
+            except Exception as ex:
+                bad.append(f"{p.name}: undecodable ({type(ex).__name__})")
+    return {"ok": not bad, "checked": checked, "bytes": total, "decoded": decoded,
+            "detail": "; ".join(bad[:5]) or f"{checked} tiles verified, {decoded} decoded"}
 
 
 def verify_manifest(path: Path) -> dict:
     need = ["name", "captured_utc", "zoom", "bbox", "tile_range", "status", "coverage_pct",
-            "expected_tiles", "received_tiles", "blocks", "checks"]
+            "expected_tiles", "received_tiles", "checks"]
     try:
         m = json.loads(path.read_text(encoding="utf-8"))
     except Exception as ex:

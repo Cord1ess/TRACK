@@ -53,10 +53,12 @@ jobs:
       - name: Install
         run: pip install -r data-collection/requirements.txt -r algorithms/requirements.txt
 
-      - name: Restore the captures kept by the last collection run
+      - name: Restore the captures and site kept by the last collection run
         uses: actions/cache/restore@v4
         with:
-          path: data-collection/captures
+          path: |
+            data-collection/captures
+            site
           key: captures-none
           restore-keys: captures-
 

@@ -19,7 +19,7 @@ config.json          bbox, zoom (17 is the native maximum), rate, palette, thres
 collector/
   grid.py            Web Mercator and tile maths
   fetch.py           the tile URL, rate limiter, strict PNG validation, retrying fetch
-  tiles.py           coverage, per-tile audit, 16x16 block mosaics
+  tiles.py           coverage and the per-tile audit
   analyze.py         palette classification, traffic fraction
   checks.py          checks before and after a capture
   capture.py         one capture run -> captures/<name>/
@@ -38,11 +38,11 @@ The scheduled capture is the GitHub Actions workflow in
 
 ```
 captures/<name>/
-  manifest.json      zoom, bbox, tile_range, coverage, validation stats, palette, checks, status
+  manifest.json      zoom, bbox, tile_range, coverage, validation stats, palette, checks,
+                     status, seconds per stage
   tiles/z17_x_y.png  every validated tile
-  blocks/            16x16-tile mosaics with bounds and sha256
   tiles.csv.gz       one row per expected tile: bytes, sha256, opaque and traffic fraction
-  preview_on_white.png, log.txt
+  log.txt
 ```
 
 Status: `ok` complete and clean, `partial` usable but some tiles unrecoverable,
@@ -57,7 +57,7 @@ workflow stops on a bad capture.
 | per tile | accepted only if a complete PNG that decodes to exactly 256 px and is a transparent overlay; retries on HTTP 5xx and 429, network errors and integrity failures |
 | retry pass | every tile that failed the sweep is fetched again |
 | gap fill | empty tiles ringed by traffic are fetched again and merged |
-| after | coverage against the threshold, traffic present, coloured pixels still match the palette (warning below 80 %: Google restyled), block bounds map back to tile origins, block counts reconcile, files re-read and re-hashed, manifest complete |
+| after | coverage against the threshold, traffic present, coloured pixels still match the palette (warning below 80 %: Google restyled), tile bounds map back to tile coordinates, every tile re-read from disk and compared with what was fetched, manifest complete |
 
 ## Facts
 

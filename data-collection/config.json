@@ -14,8 +14,6 @@
   "min_free_gb": 1.0,
   "fill_gaps": true,
   "incidents": false,
-  "block_tiles": 16,
-  "block_format": "rgba",
   "palette": {
     "green": [
       [

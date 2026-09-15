@@ -115,7 +115,7 @@ def t_palette(cfg):
     return f"{len(refs)} classes, {len(want)} references+blends+casing edges matched, neutrals rejected"
 
 
-@test("blocks + audit + georef + file verification, hole and tamper detected")
+@test("audit + coverage + georef + file verification, hole and tamper detected")
 def t_blocks(cfg):
     z, tp = cfg["zoom"], cfg["tile_px"]
     bbox = {"north": 23.745, "south": 23.735, "east": 90.415, "west": 90.40}
@@ -126,19 +126,22 @@ def t_blocks(cfg):
     del tiles[hole]
     with tempfile.TemporaryDirectory() as td:
         out = Path(td)
-        blocks = tiles_mod.build_blocks(tiles, z, expected, out, cfg, tp)
+        (out / "tiles").mkdir()
+        for (x, y), data in tiles.items():
+            (out / "tiles" / f"z{z}_{x}_{y}.png").write_bytes(data)
         audit = tiles_mod.audit_tiles(tiles, expected, out, cfg)
-        g = checks.georef_check(blocks, z, bbox)
+        cov = tiles_mod.coverage(expected, set(tiles))
+        assert cov["received"] == len(tiles) and list(hole) in [list(m) for m in cov["missing"]], "hole not reported"
+        g = checks.georef_check(set(tiles), z, bbox, grid.tile_range(bbox, z))
         assert g["ok"], g["detail"]
-        v = checks.verify_files(out, blocks)
+        v = checks.verify_files(out, tiles, z, tp)
         assert v["ok"], v["detail"]
-        assert sum(b["tiles_present"] for b in blocks) == len(tiles)
-        assert any(list(hole) in b["tiles_missing"] for b in blocks), "hole not reported"
         assert audit["tiles_ok"] == len(tiles) and audit["rows"] == len(expected)
-        p = out / blocks[0]["file"]
+        x, y = sorted(tiles)[0]
+        p = out / "tiles" / f"z{z}_{x}_{y}.png"
         p.write_bytes(p.read_bytes()[:-10])
-        assert not checks.verify_files(out, blocks)["ok"], "truncated file not detected"
-    return f"{len(blocks)} blocks, {len(expected)} tiles"
+        assert not checks.verify_files(out, tiles, z, tp)["ok"], "truncated file not detected"
+    return f"{len(tiles)} tiles written, verified and tamper-checked"
 
 
 @test("disk space")
