@@ -36,10 +36,12 @@ table, and the layer index.
 
 Two workflows. `deploy.yml` publishes the site on every push that changes the
 app or the algorithms, from the data already collected, so the site is live
-before the first capture. `collect.yml` runs every 10 minutes: capture,
-pipeline, build, deploy. Runs never overlap. A capture takes about 13 minutes,
-so the site updates about every 15 minutes. A failed capture stops the run and
-the site keeps its last data.
+before the first capture. `collect.yml` is triggered every 10 minutes: capture,
+pipeline, build, deploy. Runs never overlap. A capture takes about 13 minutes
+and the rest of a run about 5, so new data lands about every 20 minutes;
+GitHub's scheduler can add delay on top. A failed capture stops the run and
+the site keeps its last data. The panel on the page shows the latest capture,
+its age, when the site was built, and links to the run history.
 
 Setup, once:
 

@@ -11,7 +11,7 @@ python build_site.py --out ../site --keep 3 # the static site
 
 ## What it shows
 
-- Every capture under `../data-collection/captures/` as a raster tile layer, full resolution at zoom 17. Lower zooms are built by max-alpha pooling so thin lines survive, and cached under `<capture>/_pyramid/`.
+- Every capture under `../data-collection/captures/` as a raster tile layer, full resolution at zoom 17. Lower zooms are built by max-alpha pooling so thin lines survive, and cached under `<capture>/_pyramid/`. A line under the capture controls says how the collection is going: the latest capture and its age, when the site was built, the cadence, and a link to the run history. A capture that arrives while the page is open is listed, marked on the timeline and shown.
 - TRACK's model from `../algorithms/output/traffic/complete.csv` as vector lines on the same green, amber, red ramp measured from Google's tiles, so the two compare directly. All roads, observed only, or predicted only; A/B flips between the capture and the model.
 - The road graph: 48,413 junctions and 60,409 segments (two-way pairs merged), with the 9,373 cut points from the 150 m cap hidden by default, a pulse along each segment in its direction, one-way arrows from zoom 15, and colour by class, direction or length.
 - The algorithm layers from `../algorithms/output/layers/`: one per algorithm, each listed with what it shows, a legend and its numbers.

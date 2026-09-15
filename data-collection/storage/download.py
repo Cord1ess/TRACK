@@ -35,6 +35,9 @@ def main() -> int:
         entries = list(api.list_repo_tree(args.repo, path_in_repo="captures", repo_type="dataset"))
     except Exception as e:
         print(f"[download] could not list the archive: {type(e).__name__}: {str(e)[:200]}")
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"::warning title=archive::could not list {args.repo}: {type(e).__name__}. "
+                  "Check the HF_TOKEN and HF_REPO secrets.")
         return 0
     names = [e.path.split("/")[-1] for e in entries if "." not in e.path.split("/")[-1]]
 
@@ -58,6 +61,8 @@ def main() -> int:
     want = [n for n in want if not (args.to / n / "manifest.json").exists()]
     if not want:
         print(f"[download] nothing to fetch ({len(names)} captures in the archive)")
+        if os.environ.get("GITHUB_ACTIONS") and not names:
+            print(f"::warning title=archive::{args.repo} holds no captures yet")
         return 0
 
     for n in want:
@@ -66,6 +71,8 @@ def main() -> int:
             man_path = hf_hub_download(args.repo, f"captures/{n}/manifest.json", repo_type="dataset", token=token)
         except Exception as e:
             print(f"[download] {n}: no capture.tar.gz in the archive ({type(e).__name__}); skipped")
+            if os.environ.get("GITHUB_ACTIONS"):
+                print(f"::warning title=archive::{n} could not be fetched: {type(e).__name__}")
             continue
         dst = args.to / n
         dst.mkdir(parents=True, exist_ok=True)
