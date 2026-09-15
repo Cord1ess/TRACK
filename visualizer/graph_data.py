@@ -23,11 +23,15 @@ Node features
     x  1 when this is a cut point rather than an intersection
     r  rank of the most important road touching it, 0 motorway .. 7 living street
 
-Link features carry one line per directed edge, so a two-way street appears
-twice, once per direction. That is deliberate here: this layer is about
-direction, and the arrows along each line show which way its edge runs.
-    e  edge id          o  1 when the road is one-way
-    r  road class rank  l  length in metres
+Link features carry one line per road segment, not per directed edge. A two-way
+street is two edges on identical geometry, so drawing both put one line exactly
+on top of the other and doubled the payload for nothing. The pair is merged and
+the direction information kept:
+    e  edge id           o  1 when the segment is one-way
+    t  1 when two-way    r  road class rank
+    l  length in metres
+For a one-way segment the coordinate order IS the direction of travel, which is
+what the arrows follow.
 """
 
 import gzip
@@ -148,22 +152,36 @@ class GraphData:
                              "coordinates": [round(float(pos[0]), COORD_DP), round(float(pos[1]), COORD_DP)]},
             })
 
-        link_feats = []
-        oneway = 0
+        # merge the two directions of a two-way street into one line
+        seen: dict[tuple, dict] = {}
+        order: list[tuple] = []
         for e in edges:
             geom = e.get("geometry") or []
             if len(geom) < 2:
                 continue
-            is_oneway = 1 if e.get("oneway") else 0
+            key = (min(e["u"], e["v"]), max(e["u"], e["v"]), len(geom))
+            prev = seen.get(key)
+            if prev is None:
+                seen[key] = {"edge": e, "twoway": 0}
+                order.append(key)
+            else:
+                prev["twoway"] = 1
+
+        link_feats = []
+        oneway = 0
+        for key in order:
+            rec = seen[key]
+            e = rec["edge"]
+            is_oneway = 0 if rec["twoway"] else (1 if e.get("oneway") else 0)
             oneway += is_oneway
             link_feats.append({
                 "type": "Feature",
-                "properties": {"e": int(e["id"]), "o": is_oneway,
+                "properties": {"e": int(e["id"]), "o": is_oneway, "t": rec["twoway"],
                                "r": class_rank(e.get("highway", "")),
                                "l": round(float(e.get("length_m", 0)), 1)},
                 "geometry": {"type": "LineString",
                              "coordinates": [[round(float(x), COORD_DP), round(float(y), COORD_DP)]
-                                             for x, y in geom]},
+                                             for x, y in e["geometry"]]},
             })
 
         if not node_feats or not link_feats:
@@ -177,7 +195,7 @@ class GraphData:
 
         counts = {
             "graph_id": g.get("graph_id", ""),
-            "nodes": len(node_feats), "links": len(link_feats),
+            "nodes": len(node_feats), "links": len(link_feats), "edges": len(edges),
             "junctions": len(node_feats) - cut_points, "cut_points": cut_points,
             "oneway": oneway,
             "degree": {str(k): v for k, v in sorted(degrees.items())},

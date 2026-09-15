@@ -28,7 +28,7 @@ python server.py --build-pyramid test-capture-2026-09-12   # optional: pre-build
 ## Layout
 
 A top bar for what you are looking at, map controls on the left, a tabbed panel on the
-right (Layers, Style, Weights), a legend bottom right, a timeline bottom centre, and the
+right (Layers, Style, Graph, Weights), a legend bottom right, a timeline bottom centre, and the
 position readout bottom left. The panel folds away with `\` when you want the whole map.
 
 ## Comparing our data against Google's
@@ -49,8 +49,28 @@ Turn on the inspect tool (magnifier, or `I`) and click a road to see its weight,
 coverage, free-flow speed and the slowdown the current settings give it.
 
 Hotkeys: `T` capture, `M` our data, `C` A/B flip, `P` pure colours, `L` labels,
-`B` base map, `F` fit, `I` inspect, `N` reset bearing, `1`/`2` light/dark, `\` panel,
+`B` base map, `F` fit, `I` inspect, `G` road graph, `N` reset bearing, `1`/`2` light/dark, `\` panel,
 space play/pause, arrows step the timeline, `?` for the full list.
+
+## The road graph itself
+
+The **Graph** tab draws the network the routing runs on, rather than the traffic on it:
+48,413 junctions and 60,409 segments. Junctions appear from z11.6, segments from z10.4.
+
+Two-way streets arrive as two directed edges with identical geometry, so they are merged
+into one line before serving; 110,382 directed edges become 60,409 distinct segments, and
+the payload halves. Most nodes are not junctions at all: the graph builder cuts long roads
+every 150 m, and those 9,373 cut points have exactly two neighbours and a negative id, so
+**hide cut points** leaves only the 39,040 real intersections.
+
+Direction is shown two ways. A pulse travels along each segment the way it points, and
+one-way streets get arrows from z15. The pulse is a moving dash rather than a gradient:
+`line-gradient` needs per-coordinate distance measurement along all 209,847 coordinates
+and the map never stops working, while a dash pattern costs nothing per coordinate.
+
+Edges colour by road class, one-way/two-way, or length; junctions by how many roads meet,
+by junction-versus-cut-point, or by biggest road; and four palettes tune all of it for
+whatever is underneath. Clicking a junction reports its degree, kind, biggest road and id.
 
 ## Tuning weights live
 
@@ -99,6 +119,10 @@ layer has gone missing, hidden, or stuck part-way through an animation.
   for every tile to finish loading, which while panning is almost never.
 - **Animations cannot strand a layer.** Each reveal has a timer that forces it fully
   visible, survives exceptions, and finishes at once in a background tab.
+- **The graph layer cannot blank either.** The pulse rewrites the dash pattern many
+  times a second and the colour menus rewrite paint on every segment; the suite churns
+  all of it, across zooms and theme switches, while checking the edges and junctions stay
+  present, visible and validly patterned.
 - **A watchdog repairs drift every second**, re-adding anything missing and re-applying
   every control.
 - **The server never serves nothing.** Until a rebuild succeeds, the last complete data
@@ -117,6 +141,8 @@ rather than a fresh 1.7 MB download.
 | `GET /tiles/<name>/<z>/<x>/<y>.png` | traffic tile (transparent if none); `?clean=1` for pure colours |
 | `GET /api/model` | whether our derived data is loaded, and how much of it |
 | `GET /model.geojson?part=major\|minor&v=<version>` | our data as gzipped vector features: `w` weight, `s` source, `c` coverage, `h` road class, `f` free-flow km/h, `o` reveal order. Cached for good when `v` names the served version; otherwise revalidated by ETag |
+| `GET /api/graph` | whether the road graph is loaded, and its node/edge counts |
+| `GET /graph.geojson?part=nodes\|links&v=<version>` | the graph as gzipped vector features. Nodes: `n` id, `d` neighbours, `x` cut point, `r` road class. Links: `e` id, `o` one-way, `t` two-way, `r` class, `l` length m. Same versioning as `model.geojson` |
 | `GET /api/layers` | available GeoJSON layers |
 | `GET /layers/<id>` | one layer |
 

@@ -52,7 +52,7 @@ const T = {
 const MINOR_FADE = [9.6, 10.6];      // zoom range the side streets fade in over
 const NODE_FADE = [11.6, 13.0];      // junctions fade in over this zoom range
 const LINK_FADE = [10.4, 11.6];      // graph edges fade in over this zoom range
-const ARROW_MIN_ZOOM = 14;           // direction arrows are costly: only place them close in
+const ARROW_MIN_ZOOM = 15;           // symbol placement is the slowest thing on the map
 const PARTS = ["major", "minor"];
 const GRAPH_PARTS = ["nodes", "links"];
 
@@ -360,29 +360,34 @@ const graphUrl = (part) =>
   `${location.origin}/graph.geojson?part=${part}&v=${encodeURIComponent(state.graph.version || "0")}`;
 const pal = () => PALETTES[state.graph.palette] || PALETTES.vivid;
 
-/* A pulse travelling along each edge in its direction of travel. `line-gradient`
-   paints a stop pattern along the line; moving the stops each frame makes the
-   light run from the start of the edge to its end, which is the direction the
-   edge points. One number changes per frame, so this costs nothing per road. */
-function breathExpr() {
-  const g = state.graph;
-  const depth = clamp(finite(g.breatheDepth, 0.6), 0, 1);
-  if (!g.breathe || depth <= 0) return null;
-  const head = g.phase % 1;
-  const tail = 0.34;                       // length of the bright streak
-  const dim = 1 - depth;
-  const stop = (at, v) => [clamp(at, 0, 1), v];
-  const pts = [[0, dim], stop(head - tail, dim), stop(head - tail * 0.5, 1), stop(head, dim), [1, dim]]
-    .filter((s, i, a) => i === 0 || s[0] > a[i - 1][0]);    // stops must strictly ascend
-  const out = ["interpolate", ["linear"], ["line-progress"]];
-  for (const [at, v] of pts) out.push(at, `rgba(255,255,255,${v.toFixed(3)})`);
-  return out;
+/* A pulse travelling along each segment in its direction of travel.
+
+   This is a moving DASH, not a gradient. `line-gradient` would be the obvious
+   way to do it, but it requires `lineMetrics` on the source, which makes
+   MapLibre measure distance along all 209,847 coordinates of the graph, and
+   re-writing the gradient each frame kept that work running so the map never
+   settled. A dash pattern costs nothing per coordinate: shifting the gap
+   through a short cycle makes the dashes run along each line, and because the
+   line's coordinates are stored in its direction of travel, they run that way.
+
+   PULSE_STEPS positions is all a dash cycle can show, so the animation steps
+   between them ~20 times a second instead of once per frame. */
+const PULSE_STEPS = 8;
+function dashFor(step, depth) {
+  // dash, gap, dash, gap ... in line widths. A long lit run with a short dark
+  // gap that advances one slot each step, which reads as movement.
+  const gap = 0.6 + 2.4 * clamp(depth, 0, 1);      // deeper = more visible gap
+  const lit = 5;
+  const cycle = lit + gap;
+  const offset = (step % PULSE_STEPS) / PULSE_STEPS * cycle;
+  const head = Math.max(0.05, lit - offset);
+  return offset <= 0.1 ? [lit, gap] : [head, gap, Math.max(0.1, offset), 0.1];
 }
 function linkColourExpr() {
   const c = pal();
   const mode = state.graph.linkColour;
   if (mode === "flat") return c[0];
-  if (mode === "direction") {
+  if (mode === "direction") {       // one-way against two-way
     return ["case", ["==", ["to-number", ["coalesce", ["get", "o"], 0], 0], 1], c[3], c[1]];
   }
   if (mode === "length") {
@@ -431,8 +436,10 @@ function addGraphPart(part) {
   let added = false;
   const sid = graphSourceId(part);
   if (!hasSource(sid)) {
+    // no lineMetrics: measuring distance along every coordinate is what made
+    // the animated version of this layer unable to settle
     map.addSource(sid, { type: "geojson", data: graphUrl(part), maxzoom: 14, buffer: 32,
-      tolerance: 0.375, ...(part === "links" ? { lineMetrics: true } : {}) });
+      tolerance: 0.375 });
     added = true;
   }
   const lid = graphLayerId(part);
@@ -449,17 +456,25 @@ function addGraphPart(part) {
       map.addLayer({ id: lid, type: "line", source: sid, minzoom: LINK_FADE[0] - 0.2,
         layout: { "line-cap": "butt", "line-join": "round", visibility: visible },
         paint: { "line-color": linkColourExpr(), "line-width": graphWidthExpr(),
-                 "line-opacity": graphOpacityExpr("links") } });
+                 "line-opacity": graphOpacityExpr("links"),
+                 "line-dasharray": dashFor(0, state.graph.breathe ? state.graph.breatheDepth : 0) } });
     }
     added = true;
   }
   if (part === "links" && !hasLayer("graph-arrows")) {
+    // One-way segments only, close in only, and with collision checks off:
+    // placing labels along every line in view is what stalls the map.
     map.addLayer({ id: "graph-arrows", type: "symbol", source: sid, minzoom: ARROW_MIN_ZOOM,
+      filter: ["==", ["to-number", ["coalesce", ["get", "o"], 0], 0], 1],
       layout: {
         visibility: state.graph.show && state.graph.links && state.graph.arrows ? "visible" : "none",
-        "symbol-placement": "line", "symbol-spacing": 90, "icon-allow-overlap": false,
-        "text-field": "\u25b8", "text-size": 13, "text-rotation-alignment": "map",
-        "text-keep-upright": false, "text-allow-overlap": false, "text-padding": 4,
+        "symbol-placement": "line", "symbol-spacing": 70,
+        // CARTO's glyph set has no U+25B8 triangle: asking for it placed zero
+        // arrows with no error at all. A plain ">" in a font the basemap really
+        // serves does render, so name the glyph and the font explicitly.
+        "text-field": ">", "text-font": ["Open Sans Regular", "Arial Unicode MS Regular"],
+        "text-size": 15, "text-rotation-alignment": "map",
+        "text-keep-upright": false, "text-allow-overlap": true, "text-ignore-placement": true,
       },
       paint: { "text-color": linkColourExpr(), "text-opacity": graphOpacityExpr("links") } });
     added = true;
@@ -492,20 +507,28 @@ function applyGraph() {
   applyBreath();
   syncBreathing();
 }
-/* line-gradient is the only paint property that can vary ALONG a line, which is
-   what makes the pulse possible without touching the data. */
 function applyBreath() {
-  if (!hasLayer(graphLayerId("links"))) return;
-  const expr = breathExpr();
-  setPaint(graphLayerId("links"), "line-gradient",
-    expr || "rgba(255,255,255,1)");
+  const id = graphLayerId("links");
+  if (!hasLayer(id)) return;
+  const g = state.graph;
+  const depth = clamp(finite(g.breatheDepth, 0.6), 0, 1);
+  if (!g.breathe || depth <= 0) {
+    setPaint(id, "line-dasharray", [1]);           // solid
+    return;
+  }
+  setPaint(id, "line-dasharray", dashFor(Math.round(g.phase), depth));
 }
 let breathFrame = 0;
+let breathLast = 0;
 function breathTick(now) {
   breathFrame = 0;
   if (!breathingWanted()) return;
-  state.graph.phase = (now / 1000) * 0.45 * clamp(finite(state.graph.breatheSpeed, 1), 0.05, 4);
-  applyBreath();
+  const rate = 20 * clamp(finite(state.graph.breatheSpeed, 1), 0.05, 4);
+  if (now - breathLast >= 1000 / rate) {
+    breathLast = now;
+    state.graph.phase = (state.graph.phase + 1) % PULSE_STEPS;
+    applyBreath();
+  }
   breathFrame = requestAnimationFrame(breathTick);
 }
 function breathingWanted() {
@@ -539,9 +562,10 @@ function applyGraphInfo(g) {
     state.graph.ready = true;
     if (g.version) state.graph.version = g.version;
     state.graph.summary =
-      `${Number(g.nodes || 0).toLocaleString()} nodes · ${Number(g.junctions || 0).toLocaleString()} junctions · ` +
-      `${Number(g.cut_points || 0).toLocaleString()} cut points<br>` +
-      `${Number(g.links || 0).toLocaleString()} directed edges, ${Number(g.oneway || 0).toLocaleString()} one-way · ` +
+      `<span>${Number(g.nodes || 0).toLocaleString()} nodes · ${Number(g.junctions || 0).toLocaleString()} junctions · ` +
+      `${Number(g.cut_points || 0).toLocaleString()} cut points</span><br>` +
+      `${Number(g.links || 0).toLocaleString()} segments from ${Number(g.edges || 0).toLocaleString()} directed edges · ` +
+      `${Number(g.oneway || 0).toLocaleString()} one-way · ` +
       `${((g.bytes || 0) / 1048576).toFixed(1)} MB`;
     $("graphInfo").innerHTML = state.graph.summary;
     controls.forEach((id) => { if ($(id)) $(id).disabled = false; });
@@ -1567,7 +1591,13 @@ window.__track = {
       styleReady: ready, theme: state.theme, appliedTheme: state.appliedTheme, zoom: map.getZoom(),
       traffic: layer("traffic"), major: layer(layerId("major")), minor: layer(layerId("minor")),
       graphNodes: layer(graphLayerId("nodes")), graphLinks: layer(graphLayerId("links")),
-      graph: { ...state.graph, breathing: !!breathFrame },
+      // Not `!!breathFrame` alone: breathTick zeroes the handle at its top and
+      // only re-arms at its bottom, so for the whole of applyBreath() the
+      // handle is 0 while the loop is perfectly alive. Measured: six such
+      // windows in three seconds, each one sample wide, with the dash pattern
+      // still advancing through them. Report what is true of the pulse rather
+      // than what a frame handle happens to hold at the instant of sampling.
+      graph: { ...state.graph, breathing: !!breathFrame || breathingWanted() },
       sources: { traffic: hasSource("traffic"), major: hasSource(sourceId("major")), minor: hasSource(sourceId("minor")) },
       model: {
         ready: state.model.ready, show: state.model.show, version: state.model.version,
