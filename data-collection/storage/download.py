@@ -1,39 +1,79 @@
-"""Download the collected dataset (or one day of it) from Hugging Face.
+"""Download captures from the Hugging Face archive.
 
-    python tools/download.py --to D:/track-data [--day 2026-09-10] [--repo user/name]
+    python storage/download.py --to captures [--latest 3] [--name <capture>]
 
-Env: HF_TOKEN (read access to the private repo), HF_REPO (default for --repo).
-Re-running only fetches files that are new or changed.
+Env: HF_TOKEN, HF_REPO. Fetches the newest --latest captures, or one named
+capture, into --to/<name>/: the manifest, then capture.tar.gz unpacked beside it.
+A capture already present there is skipped. Exit codes: 0 done, 3 missing env.
 """
 
 import argparse
+import json
 import os
 import sys
+import tarfile
 from pathlib import Path
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--to", type=Path, required=True, help="destination folder")
-    ap.add_argument("--day", help="only cycles/YYYY-MM-DD")
+    ap.add_argument("--to", type=Path, required=True, help="captures folder")
+    ap.add_argument("--latest", type=int, default=3, help="how many of the newest captures")
+    ap.add_argument("--name", help="one capture by name instead")
     ap.add_argument("--repo", default=os.environ.get("HF_REPO", ""))
     args = ap.parse_args()
 
     token = os.environ.get("HF_TOKEN", "").strip()
     if not args.repo or not token:
-        print("set HF_TOKEN and HF_REPO (or pass --repo)")
+        print("[download] set HF_TOKEN and HF_REPO (or pass --repo)")
         return 3
 
-    from huggingface_hub import snapshot_download
+    from huggingface_hub import HfApi, hf_hub_download
 
-    patterns = [f"cycles/{args.day}/*"] if args.day else None
-    path = snapshot_download(
-        repo_id=args.repo, repo_type="dataset", token=token,
-        local_dir=str(args.to), allow_patterns=patterns,
-    )
-    n = sum(1 for p in Path(path).rglob("manifest.json"))
-    size = sum(p.stat().st_size for p in Path(path).rglob("*") if p.is_file())
-    print(f"downloaded to {path}: {n} cycles, {size / 1e9:.2f} GB")
+    api = HfApi(token=token)
+    try:
+        entries = list(api.list_repo_tree(args.repo, path_in_repo="captures", repo_type="dataset"))
+    except Exception as e:
+        print(f"[download] could not list the archive: {type(e).__name__}: {str(e)[:200]}")
+        return 0
+    names = [e.path.split("/")[-1] for e in entries if "." not in e.path.split("/")[-1]]
+
+    def manifest_of(name: str) -> dict | None:
+        try:
+            p = hf_hub_download(args.repo, f"captures/{name}/manifest.json", repo_type="dataset", token=token)
+            return json.loads(Path(p).read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+    if args.name:
+        want = [args.name] if args.name in names else []
+    else:
+        dated = []
+        for n in names:                                   # newest by capture time
+            m = manifest_of(n)
+            if m and m.get("status") in ("ok", "partial"):
+                dated.append((m.get("captured_utc", ""), n))
+        want = [n for _, n in sorted(dated, reverse=True)[: args.latest]]
+
+    want = [n for n in want if not (args.to / n / "manifest.json").exists()]
+    if not want:
+        print(f"[download] nothing to fetch ({len(names)} captures in the archive)")
+        return 0
+
+    for n in want:
+        try:
+            tar_path = hf_hub_download(args.repo, f"captures/{n}/capture.tar.gz", repo_type="dataset", token=token)
+            man_path = hf_hub_download(args.repo, f"captures/{n}/manifest.json", repo_type="dataset", token=token)
+        except Exception as e:
+            print(f"[download] {n}: no capture.tar.gz in the archive ({type(e).__name__}); skipped")
+            continue
+        dst = args.to / n
+        dst.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(tar_path, "r:*") as tar:
+            tar.extractall(dst, filter="data")
+        (dst / "manifest.json").write_bytes(Path(man_path).read_bytes())
+        size = sum(p.stat().st_size for p in dst.rglob("*") if p.is_file())
+        print(f"[download] {n}: {size // 1024} KB, {sum(1 for p in dst.rglob('*') if p.is_file())} files")
     return 0
 
 

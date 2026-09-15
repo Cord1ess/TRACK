@@ -34,15 +34,17 @@ table, and the layer index.
 
 ## Collection and deployment
 
-`.github/workflows/collect.yml` runs every 10 minutes: capture, pipeline, build,
-deploy. Runs never overlap. A capture takes about 13 minutes, so the site
-updates about every 15 minutes. A failed capture stops the run and nothing is
-deployed.
+Two workflows. `deploy.yml` publishes the site on every push that changes the
+app or the algorithms, from the data already collected, so the site is live
+before the first capture. `collect.yml` runs every 10 minutes: capture,
+pipeline, build, deploy. Runs never overlap. A capture takes about 13 minutes,
+so the site updates about every 15 minutes. A failed capture stops the run and
+the site keeps its last data.
 
 Setup, once:
 
-1. Optional: repository secrets `HF_TOKEN` and `HF_REPO` archive every capture to a private Hugging Face dataset. Without them that step is skipped.
-2. Actions, collect, Run workflow. The first run enables Pages; after that the schedule takes over.
+1. Optional: repository secrets `HF_TOKEN` and `HF_REPO` archive every capture to a private Hugging Face dataset, and let a fresh deploy start from the newest captures there. Without them that step is skipped.
+2. Actions, deploy, Run workflow. The first run enables Pages. collect runs on its schedule from then on.
 
 The site keeps the last 3 captures (`KEEP` in the workflow). The page checks
 `data/manifest.json` every 5 seconds and swaps in new data without a reload.

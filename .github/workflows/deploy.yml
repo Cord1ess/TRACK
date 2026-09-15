@@ -1,0 +1,97 @@
+# Publish the site from the data already collected: on every push that changes
+# the app or the algorithms, and on demand. This is what makes the site live
+# before the first capture. collect.yml updates it after every capture.
+#
+# Data, in order of preference: the captures kept in the Actions cache by the
+# last collection run; the newest captures in the Hugging Face archive when the
+# cache is empty and the secrets are set; otherwise the road graph alone.
+
+name: deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - visualizer/**
+      - algorithms/**
+      - .github/workflows/deploy.yml
+  workflow_dispatch:
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+env:
+  KEEP: 3
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  HF_REPO: ${{ secrets.HF_REPO }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment:
+      name: github-pages
+      url: https://cord1ess.github.io/TRACK/
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: "**/requirements.txt"
+
+      - name: Install
+        run: pip install -r data-collection/requirements.txt -r algorithms/requirements.txt
+
+      - name: Restore the captures kept by the last collection run
+        uses: actions/cache/restore@v4
+        with:
+          path: data-collection/captures
+          key: captures-none
+          restore-keys: captures-
+
+      - name: Fetch the newest captures from the archive when the cache is empty
+        if: env.HF_TOKEN != ''
+        working-directory: data-collection
+        run: python storage/download.py --to captures --latest "$KEEP"
+
+      - name: Run the pipeline on the newest capture, if there is one
+        working-directory: algorithms
+        run: |
+          NEWEST=$(python - <<'EOF'
+          import json, pathlib
+          caps = []
+          for m in pathlib.Path("../data-collection/captures").glob("*/manifest.json"):
+              d = json.loads(m.read_text(encoding="utf-8"))
+              if d.get("status") in ("ok", "partial"):
+                  caps.append((d.get("captured_utc", ""), m.parent.name))
+          print(max(caps)[1] if caps else "")
+          EOF
+          )
+          if [ -n "$NEWEST" ]; then
+            echo "newest capture: $NEWEST"
+            python pipeline.py --capture "../data-collection/captures/$NEWEST" --only decode,impute,layers --quick
+          else
+            echo "no captures yet: the site is built with the road graph only"
+          fi
+
+      - name: Build the site
+        run: python visualizer/build_site.py --out site --keep "$KEEP"
+
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

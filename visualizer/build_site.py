@@ -76,9 +76,11 @@ def copy_tiles(name: str, out: Path) -> int:
 
 
 def write_vector(service, parts: tuple, out: Path, prefix: str) -> dict:
-    """The versioned payloads as plain JSON; the CDN compresses them on the way out."""
+    """The versioned payloads as plain JSON; the CDN compresses them on the way out.
+    Without data the manifest carries ready: false and the page says so."""
     if not service.ensure():
-        raise SystemExit(f"{prefix}: {service.error or 'no data'}")
+        print(f"  {prefix:7s} no data: {service.error or 'nothing built yet'}", flush=True)
+        return {"ready": False, "error": service.error or "not built"}
     for part in parts:
         data, version = service.payload(part)
         (out / f"{prefix}-{part}.{version}.json").write_bytes(gzip.decompress(data))
@@ -115,8 +117,20 @@ def main() -> int:
     ap.add_argument("--out", type=Path, default=HERE.parent / "site")
     ap.add_argument("--keep", type=int, default=3, help="newest captures to include")
     ap.add_argument("--prune", action="store_true", help="delete captures not included")
+    ap.add_argument("--captures", type=Path, help="captures folder (default: ../data-collection/captures)")
+    ap.add_argument("--output", type=Path, help="pipeline output folder (default: ../algorithms/output)")
     args = ap.parse_args()
     t0 = time.time()
+
+    if args.captures:
+        server.CAPTURES = args.captures.resolve()
+    if args.output:
+        server.OUTPUT = args.output.resolve()
+    graph_json = server.OUTPUT / "graph" / "dhaka.json"
+    packed = graph_json.with_suffix(".json.gz")
+    if not graph_json.exists() and packed.exists():
+        graph_json.write_bytes(gzip.decompress(packed.read_bytes()))
+        print(f"  graph   unpacked {packed.name}", flush=True)
 
     out = args.out.resolve()
     if out.exists():
@@ -136,9 +150,11 @@ def main() -> int:
                 print(f"  pruned  {d.name}", flush=True)
 
     model = write_vector(model_mod.discover(server.OUTPUT), ("major", "minor"), out / "data", "model")
-    print(f"  model   version {model.get('version')}: {model.get('lines', 0):,} lines", flush=True)
+    if model.get("ready"):
+        print(f"  model   version {model.get('version')}: {model.get('lines', 0):,} lines", flush=True)
     graph = write_vector(graph_mod.discover(server.OUTPUT), ("nodes", "links"), out / "data", "graph")
-    print(f"  graph   version {graph.get('version')}: {graph.get('links', 0):,} segments", flush=True)
+    if graph.get("ready"):
+        print(f"  graph   version {graph.get('version')}: {graph.get('links', 0):,} segments", flush=True)
     layers = copy_layers(out)
     print(f"  layers  {len(layers)}", flush=True)
 

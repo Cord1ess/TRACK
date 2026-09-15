@@ -24,7 +24,8 @@ collector/
   checks.py          checks before and after a capture
   capture.py         one capture run -> captures/<name>/
   reaudit.py         recompute palette-dependent stats of an existing capture
-storage/             upload.py and download.py: a private Hugging Face dataset as the archive
+storage/             upload.py and download.py: a private Hugging Face dataset as the archive,
+                     two files per capture (manifest.json and capture.tar.gz, about 2.5 MB)
 scheduler/           daily_check.py: health report over the archive
 tests/selftest.py
 captures/            not committed

@@ -1,13 +1,14 @@
-# Capture Dhaka's traffic, run the pipeline, publish the visualizer to GitHub Pages.
+# Capture Dhaka's traffic, run the pipeline, update the site on GitHub Pages.
 #
 # Triggers every 10 minutes. A capture takes about 13 minutes, so runs never
 # overlap: the next one waits. The road graph is committed (gzipped); the
 # pipeline unpacks it and never queries OpenStreetMap here. A failed capture
-# stops the run, so a bad cycle never deploys.
+# stops the run, so a bad cycle never deploys and the site keeps its last data.
 #
-# The first run enables Pages itself. Optional: repository secrets HF_TOKEN and
-# HF_REPO archive every capture to a private Hugging Face dataset; without them
-# that step is skipped.
+# deploy.yml publishes the site on every push, so it is live before the first
+# capture; this workflow only refreshes it. Optional: repository secrets
+# HF_TOKEN and HF_REPO archive every capture to a private Hugging Face dataset;
+# without them that step is skipped.
 
 name: collect
 
@@ -36,7 +37,7 @@ jobs:
     timeout-minutes: 45
     environment:
       name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
+      url: https://cord1ess.github.io/TRACK/
     steps:
       - uses: actions/checkout@v4
 
