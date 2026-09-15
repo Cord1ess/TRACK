@@ -1,23 +1,22 @@
-"""Upload one capture to the private Hugging Face dataset, then verify it landed.
+"""Sends one capture to the private archive and checks it arrived.
 
     python storage/upload.py captures/<name> [--dry-run] [--allow-public]
 
-A capture becomes two files in one commit: captures/<name>/manifest.json,
-readable without downloading anything else, and captures/<name>/capture.tar.gz
-with the native data: the tiles, tiles.csv.gz and the log. One archive per
-capture keeps the dataset at two files per run instead of five thousand, and
-about 2.5 MB. Derived files are left out: the block mosaics and the preview
-(rebuilt from the tiles) and the visualizer's tile caches. latest.json at the
-root is refreshed in the same commit, and loose files from an earlier upload
-of the same capture are removed.
+A capture is stored as two files. The manifest goes up on its own, so the
+details of a capture can be read without downloading it. Everything else, the
+five thousand tiles and the audit file and the log, goes into a single
+compressed archive of about 3 MB. Sending one archive instead of five thousand
+separate files is the difference between seconds and many minutes.
 
-Failsafes: the token is checked first; the dataset must be private (or pass
---allow-public); one commit per capture; the remote listing is compared with
-what was sent, and a mismatch re-uploads once; three attempts with backoff.
+Anything that can be rebuilt from the tiles is left out.
 
-Env: HF_TOKEN (write token), HF_REPO (e.g. "someone/track-dhaka-traffic").
-Exit codes: 0 uploaded and verified, 1 upload failed, 3 missing env or folder,
-or the repo is public.
+Safety: the access token is checked before anything is sent, and the upload is
+refused if the dataset is not private. After sending, the file sizes on the
+server are compared with what was sent, and it retries up to three times if
+they do not match.
+
+Needs HF_TOKEN and HF_REPO in the environment.
+Exit codes: 0 sent and verified, 1 failed, 3 bad setup or public dataset.
 """
 
 import argparse
@@ -29,8 +28,12 @@ import tarfile
 import time
 from pathlib import Path
 
+# Anything that can be rebuilt from the tiles is left out of the archive.
+# blocks/ and preview_on_white.png were dropped from the collector in
+# September 2026; they stay listed so re-uploading an older capture folder
+# still skips them.
 DERIVED = {"_pyramid", "_pyramid_clean", "_clean",      # the visualizer's tile caches
-           "blocks", "preview_on_white.png"}             # mosaics and preview, made from the tiles
+           "blocks", "preview_on_white.png"}            # older captures only
 KEEP = ("manifest.json", "capture.tar.gz")
 
 
@@ -88,7 +91,8 @@ def main() -> int:
         "captured_utc": captured, "slot_utc": captured, "status": manifest.get("status"),
         "coverage_pct": manifest.get("coverage_pct"), "tiles_nonempty": manifest.get("tiles_nonempty"),
         "expected_tiles": manifest.get("expected_tiles"), "bytes_tiles": manifest.get("bytes_tiles"),
-        "fetch_seconds": manifest.get("fetch_seconds"), "zoom": manifest.get("zoom"),
+        "fetch_seconds": manifest.get("fetch_seconds"),
+        "total_seconds": manifest.get("total_seconds"), "zoom": manifest.get("zoom"),
         "warnings": len(manifest.get("warnings", [])), "path": path_in_repo,
         "uploaded_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }

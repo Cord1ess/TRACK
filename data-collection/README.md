@@ -57,7 +57,7 @@ workflow stops on a bad capture.
 | per tile | accepted only if a complete PNG that decodes to exactly 256 px and is a transparent overlay; retries on HTTP 5xx and 429, network errors and integrity failures |
 | retry pass | every tile that failed the sweep is fetched again |
 | gap fill | empty tiles ringed by traffic are fetched again and merged |
-| after | coverage against the threshold, traffic present, coloured pixels still match the palette (warning below 80 %: Google restyled), tile bounds map back to tile coordinates, every tile re-read from disk and compared with what was fetched, manifest complete |
+| after | coverage against the threshold, traffic present, coloured pixels still match the palette (warning below 80 %: Google restyled), tile bounds map back to tile coordinates, every tile re-read from disk and compared with what was fetched, no error response that cost a tile, manifest complete |
 
 ## Facts
 

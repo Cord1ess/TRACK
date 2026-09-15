@@ -1,24 +1,33 @@
-"""One keyless capture of Google's traffic layer over the configured area.
+"""Takes one snapshot of Dhaka's traffic.
 
     python collector/capture.py --name <capture-name> [--bbox N,S,E,W] [--zoom 17]
                                 [--rate 96] [--workers 32] [--fill-gaps] [--incidents]
 
-Writes captures/<name>/:
-    manifest.json     zoom, bbox, tile range, coverage, validation stats, checks,
-                      status, seconds per stage
-    tiles/            every validated transparent traffic tile, z{z}_{x}_{y}.png
-    tiles.csv.gz      one row per expected tile: bytes, sha256, content fractions
-    log.txt
+This is the file that does the collecting. It works out which tiles cover the
+city, downloads all 4,928 of them, checks what came back, and writes the lot
+into captures/<name>/ as tiles, an audit file, a log, and a manifest
+describing the whole run.
 
-Safety net, in order:
-    preflight   config valid, disk space, grid math self-check, name unused
-    sweep       every tile fetched through fetch.fetch (strict PNG validation, retries)
-    retry pass  every tile that failed the sweep is fetched again
-    gap-fill    (optional) empty tiles ringed by traffic are re-fetched and merged
-    post        coverage vs threshold, traffic present, palette still matches,
-                georef round-trip, every tile re-read + compared, manifest complete
-Status: ok (complete, clean) | partial (usable, incomplete) | failed (unusable)
-Exit codes: 0 ok/partial, 2 failed, 3 preflight error.
+The download takes about a minute. That speed matters: traffic changes, so a
+capture that took a quarter of an hour would be a smear of several different
+moments rather than a snapshot of one.
+
+How a run goes:
+
+    before      is the setup sane, is there disk space, does the map maths
+                still work, is this name free
+    sweep       download every tile, each one checked as it arrives
+    retry       anything that failed, fetched again
+    gap fill    a blank tile surrounded by traffic is suspicious, so it is
+                fetched once more in case it arrived empty by accident
+    after       did we get enough tiles, is there traffic on them, do we still
+                recognise the colours, are the tiles where they claim to be,
+                did everything survive being written to disk
+
+A run ends as ok, partial when a few tiles could not be had, or failed. The
+workflow stops on failed, so a bad capture never reaches the site.
+
+Exit codes: 0 ok or partial, 2 failed, 3 the setup was wrong.
 """
 
 import argparse
@@ -39,7 +48,9 @@ from fetch import Limiter, fetch
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-VERSION = "3.0.0"
+# 4.0.0: no more blocks/ or preview; the manifest carries stage_seconds,
+# total_seconds, rate, rate_final and slow_downs.
+VERSION = "4.0.0"
 
 
 def utc_now() -> str:
@@ -47,7 +58,8 @@ def utc_now() -> str:
 
 
 class Stage:
-    """Times each part of a run into `seconds`, so a slow capture says where."""
+    """Times each part of a run, so a slow capture says where it went slow.
+    The timings end up in the manifest and in the log."""
 
     def __init__(self):
         self.seconds = {}
@@ -84,9 +96,14 @@ CRITICAL = ("coverage", "traffic_content", "georef", "files")
 
 
 def decide_status(ck: dict) -> str:
-    """ok = every check passed; partial = only coverage_full failed (a few
-    tiles unrecoverable); failed = a critical check failed. Non-critical
-    checks (http_clean, palette_match) only add warnings."""
+    """Turn the checks into one word.
+
+    failed  something essential is wrong, the capture cannot be used
+    partial a few tiles could not be had, but the rest is good
+    ok      everything passed
+
+    A couple of checks only ever warn. A restyled palette does not ruin a
+    capture, because the tiles are kept and can be read again later."""
     if any(not ck[k]["ok"] for k in CRITICAL if k in ck):
         return "failed"
     if not ck.get("coverage_full", {"ok": True})["ok"]:
@@ -95,11 +112,18 @@ def decide_status(ck: dict) -> str:
 
 
 def has_traffic(data: bytes, cfg: dict) -> bool:
+    """Is anything painted on this tile at all?"""
     return analyze.traffic_fraction(analyze.load_image(data).convert("RGBA"),
                                     cfg["palette"], cfg["palette_tolerance"])["traffic_frac"] > 0
 
 
 def sweep(targets, cfg, limiter, stats, log, label):
+    """Download a list of tiles using several workers at once.
+
+    The workers share one rate limiter, so adding workers does not speed the
+    run past what we said we would ask of Google. Returns only the tiles that
+    arrived and passed their checks; the caller decides what to do about the
+    rest."""
     got, done = {}, 0
     with ThreadPoolExecutor(max_workers=cfg["workers"]) as ex:
         futs = [ex.submit(fetch, cfg["zoom"], x, y, limiter, stats, cfg["tile_px"],
@@ -189,8 +213,16 @@ def run(cfg: dict, name: str, out_root: Path, log: Log) -> tuple[Path | None, di
                                  "detail": f"{audit['tiles_nonempty']} non-empty tiles, mean traffic frac {audit['mean_traffic_frac']}"}
         ck["palette_match"] = checks.palette_match_check(audit)
         ck["georef"] = checks.georef_check(set(tiles), cfg["zoom"], cfg["bbox"], tile_range)
-        ck["http_clean"] = {"ok": not any(k.startswith("http_") and k != "http_200" for k in stats),
-                            "detail": f"http {dict((k, v) for k, v in stats.items() if k.startswith('http_'))}"}
+        # An error that a retry recovered from is the retry logic working, not
+        # a fault, so it is reported and not counted against the capture. Only
+        # an error that actually cost us a tile is a problem, and that shows up
+        # in coverage as well.
+        errors = {k: v for k, v in stats.items() if k.startswith("http_") and k != "http_200"}
+        ck["http_clean"] = {
+            "ok": not unrecoverable,
+            "detail": (f"{sum(errors.values())} error responses ({dict(errors)}), all recovered by retrying"
+                       if errors and not unrecoverable else
+                       f"http {dict((k, v) for k, v in stats.items() if k.startswith('http_'))}")}
         ck["files"] = checks.verify_files(out_dir, tiles, cfg["zoom"], cfg["tile_px"])
 
     manifest.update({

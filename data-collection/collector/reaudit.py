@@ -1,13 +1,16 @@
-"""Recompute the palette-dependent statistics of an existing capture.
+"""Redoes the colour numbers for a capture already on disk.
 
     python collector/reaudit.py --name <capture-name> [--config config.json]
 
-Nothing is fetched or re-encoded: the stored tiles do not depend on the
-palette. Rewritten: tiles.csv.gz and the manifest's content fields, palette,
-checks and status. Run it after changing the palette in config.json (e.g.
-Google restyled the traffic layer) so the stored statistics describe the
-stored pixels again.
-Exit codes: 0 ok/partial, 2 failed, 3 bad config or no such capture.
+Nothing is downloaded. The tiles are pictures and do not change; only our
+reading of which colour means what does. So when the colours in config.json
+are corrected, usually because Google restyled its traffic layer, this walks
+the stored tiles again and rewrites the counts and the manifest.
+
+That is why a restyle is only a warning and never loses a capture: the pixels
+are kept, and the meaning can be fixed afterwards.
+
+Exit codes: 0 fine, 2 the capture is unusable, 3 bad setup or no such capture.
 """
 
 import argparse

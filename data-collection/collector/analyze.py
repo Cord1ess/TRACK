@@ -1,6 +1,13 @@
-"""Image analysis for the TRACK collector: traffic-colour classification,
-per-image traffic fraction, palette measurement and palette quantisation.
-Works on Pillow images; heavy lifting in numpy.
+"""Reads the colours in a traffic tile.
+
+Google paints traffic as coloured lines: green, amber, red, dark red. This
+file decides which of those a pixel is, and how much of a tile is painted.
+Everything else in the collector uses it to check a capture is sound.
+
+    classify_pixels   which traffic colour each pixel is, or none
+    traffic_fraction  how much of one image is painted, per colour
+    palette_match     what share of coloured pixels we still recognise
+    measure_colours   the commonest colours actually present, to check ours
 """
 
 import io
@@ -28,10 +35,12 @@ def image_info(data: bytes) -> dict:
 
 
 def palette_refs(palette: dict) -> list[tuple[str, np.ndarray]]:
-    """Normalise a palette to [(class name, (k,3) reference colours)].
-    config.json may give one colour per class ([r,g,b]) or several
-    ([[r,g,b], ...]): Google draws every line as a fill plus a darker border of
-    the same hue, so a class lists both and anti-aliased blends still match."""
+    """Put the palette from config.json into one shape: a list of
+    (colour name, array of reference colours).
+
+    A colour can list several references because Google draws each line as a
+    bright fill with a darker border of the same hue. Listing both means the
+    border is recognised as the same traffic level, not discarded."""
     out = []
     for name, v in palette.items():
         arr = np.asarray(v, dtype=np.int32)
@@ -39,16 +48,18 @@ def palette_refs(palette: dict) -> list[tuple[str, np.ndarray]]:
     return out
 
 
-CASING_T_MIN = 0.4   # a casing-blend pixel counts for its class when the fill covers >= 40% of it
+CASING_T_MIN = 0.4   # an edge pixel counts only if the colour fills at least 40% of it
 
 
 def casing_blend(rgb: np.ndarray, refs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Google draws red and dark red inside a WHITE casing, so a line's edge
-    pixels are fill blended with white: p = t*C + (1-t)*white. For every pixel
-    fit t against each reference colour C (channels where C is itself near
-    white carry no information and are skipped) and return (index of the best
-    fitting reference, t). t is the fill coverage: 1 = pure fill, 0 = pure
-    casing; a poor fit (channels disagree by more than 0.08) gives t = 0."""
+    """Rescue the pale pixels along the edge of a line.
+
+    Red and dark red lines are drawn inside a white outline, so the pixels at
+    a line's edge are part colour and part white and match no reference
+    exactly. For each pixel this works out how much of it is colour: 1 means
+    pure colour, 0 means pure white. Returns which colour it looks like and
+    how much of it there is. A pixel whose channels disagree is not a blend of
+    anything and gets 0."""
     p = rgb.astype(np.float64)
     denom = 255.0 - refs.astype(np.float64)                             # (K,3)
     valid = denom > 8.0
@@ -62,13 +73,13 @@ def casing_blend(rgb: np.ndarray, refs: np.ndarray) -> tuple[np.ndarray, np.ndar
 
 
 def classify_pixels(rgb: np.ndarray, palette: dict, tolerance: float) -> np.ndarray:
-    """rgb: (N,3). Returns (N,) int8 class index into palette order, -1 = no match.
-    1. A pixel takes the class of its nearest reference colour (euclidean in
-       RGB) if that colour is within `tolerance`.
-    2. A pixel that misses every reference may still be the edge of a cased
-       line, fill blended with white casing (see casing_blend): it takes that
-       fill's class when the fill covers at least CASING_T_MIN of it.
-    Pure casing, grey and black fail both steps and return -1."""
+    """Decide which traffic colour each pixel is. Returns one number per
+    pixel: a position in the palette, or -1 for no traffic colour.
+
+    Two passes. First, a pixel takes the closest reference colour, if it is
+    close enough. Second, a pixel that matched nothing may still be the pale
+    edge of a line, so casing_blend gets a look at it. White, grey and black
+    fail both and come back as -1."""
     rgb = np.asarray(rgb, dtype=np.int32).reshape(-1, 3)
     flat = [(i, c) for i, (_, refs) in enumerate(palette_refs(palette)) for c in refs]
     cls_of_ref = np.asarray([i for i, _ in flat], dtype=np.int8)
@@ -88,9 +99,11 @@ def classify_pixels(rgb: np.ndarray, palette: dict, tolerance: float) -> np.ndar
 
 
 def palette_match(img: Image.Image, palette: dict, tolerance: float) -> dict:
-    """Palette-drift detector: of the opaque, clearly coloured pixels
-    (saturation > 40), what fraction classifies into some class? Near 100%
-    on a healthy capture; a Google restyle shows up here first."""
+    """Of the pixels that are clearly some colour, what share do we recognise?
+
+    Near 100% on a healthy capture. If Google restyles its traffic layer, this
+    drops, and it is the first place that shows. The capture still keeps its
+    tiles: only the colour names would be wrong, and reaudit.py can redo them."""
     rgba = np.asarray(img.convert("RGBA")).reshape(-1, 4)
     rgb = rgba[rgba[:, 3] > 128][:, :3].astype(np.int32)
     coloured = rgb[(rgb.max(axis=1) - rgb.min(axis=1)) > 40]
@@ -103,8 +116,8 @@ def palette_match(img: Image.Image, palette: dict, tolerance: float) -> dict:
 
 def traffic_fraction(img: Image.Image, palette: dict, tolerance: float,
                      sample: int = 512) -> dict:
-    """Fraction of all pixels that match a traffic palette colour, per class.
-    Downsamples large images for speed."""
+    """What share of an image is painted with traffic, and in which colours.
+    Large images are shrunk first, since a share does not need every pixel."""
     if max(img.size) > sample:
         img = img.copy()
         img.thumbnail((sample, sample), Image.NEAREST)
@@ -124,8 +137,8 @@ def traffic_fraction(img: Image.Image, palette: dict, tolerance: float,
 
 
 def measure_colours(img: Image.Image, top: int = 12, sample: int = 1024) -> list[dict]:
-    """Most common opaque saturated colours: used to measure Google's actual
-    palette on a real capture instead of assuming it."""
+    """The commonest colours actually in an image. Used to read Google's real
+    palette off a capture rather than trusting the values in config.json."""
     if max(img.size) > sample:
         img = img.copy()
         img.thumbnail((sample, sample), Image.NEAREST)

@@ -1,10 +1,12 @@
-"""Preflight and post-capture checks for the TRACK collector.
+"""The checks that decide whether a capture can be trusted.
 
-Every check returns {"ok": bool, "detail": str, ...} and never raises, so
-capture.py can collect them all into the manifest and decide the run status.
+Some run before a capture starts, to catch a bad setup early. The rest run
+after, on what was actually downloaded. Every check answers the same way: did
+it pass, and a line of plain text saying what was found. None of them raise,
+so capture.py can run them all, write them into the manifest, and then decide
+whether the capture is good, usable, or unusable.
 """
 
-import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -54,9 +56,11 @@ def validate_config(cfg: dict) -> dict:
 
 
 def palette_match_check(audit: dict, min_frac: float = 0.8, min_px: int = 1000) -> dict:
-    """Warn when the coloured pixels of a capture stop matching the palette:
-    the first sign that Google restyled the traffic layer. Non-critical, the
-    raw tiles are still good; re-measure with analyze.measure_colours."""
+    """Warn if we stopped recognising the colours in the tiles.
+
+    That is the first sign Google has restyled its traffic layer. It is only a
+    warning: the tiles themselves are still fine, and reaudit.py can work out
+    the new colours and redo the numbers without downloading anything again."""
     n, frac = audit.get("coloured_px", 0), audit.get("palette_match_frac", 1.0)
     return {"ok": n < min_px or frac >= min_frac,
             "detail": f"{frac:.0%} of {n} coloured px match the palette (min {min_frac:.0%})"}
@@ -70,9 +74,11 @@ def disk_check(path: Path, min_free_gb: float) -> dict:
 
 
 def grid_roundtrip() -> dict:
-    """lon/lat -> tile -> lon/lat must round-trip; plus an anchor computed
-    independently with the OSM wiki formula: Kakrail (23.7358, 90.4063) lies
-    in tile (98451, 56635) at zoom 17."""
+    """Prove the map maths still works before downloading anything.
+
+    Turn a coordinate into a tile position and back again: it must come back
+    to where it started. Then check one known answer worked out separately by
+    hand, so a wrong formula cannot quietly agree with itself."""
     worst = 0.0
     for z in (12, 16, 17):
         for lat, lon in ((23.7358, 90.4063), (23.90, 90.32), (23.69, 90.47)):
@@ -88,10 +94,13 @@ def grid_roundtrip() -> dict:
 
 
 def georef_check(tiles: set, zoom: int, bbox: dict, tile_range: dict) -> dict:
-    """Every tile's own corner must map back to its (x, y), and the tile range
-    must sit inside the bbox it was derived from. Catches a wrong zoom, swapped
-    axes or a bad manifest. Checks the corners and a sample of the interior,
-    which is enough: the failure modes are systematic, not per tile."""
+    """Check the tiles really are where they claim to be.
+
+    Each tile's corner is turned back into a tile position and must give the
+    same tile, and every tile must fall inside the area we asked for. This
+    catches a wrong zoom level or swapped north and east. Only the corners and
+    a sample of the middle are tested, because these mistakes affect the whole
+    grid at once, never one tile on its own."""
     bad = []
     r = tile_range
     if not (r["x0"] <= r["x1"] and r["y0"] <= r["y1"]):
@@ -119,10 +128,13 @@ def _georef_sample(tiles: set, r: dict) -> list:
 
 
 def verify_files(out_dir: Path, tiles: dict, zoom: int, tile_px: int, sample: int = 200) -> dict:
-    """Re-read written tiles from disk and compare them with what was fetched.
-    Catches a partial write or corrupted file before it is archived or
-    uploaded. Every tile is re-read and hashed; a sample is also fully decoded,
-    since decoding 5,000 PNGs costs more than that part of the check is worth."""
+    """Read every tile back off the disk and check it matches what was
+    downloaded.
+
+    Catches a file that was half written or damaged on the way to disk, before
+    it gets archived. Every tile is compared byte for byte. A sample is also
+    opened as an image, because opening five thousand images costs more time
+    than that extra confidence is worth."""
     from PIL import Image
 
     bad, checked, total, decoded = [], 0, 0, 0

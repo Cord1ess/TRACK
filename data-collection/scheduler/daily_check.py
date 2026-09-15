@@ -1,12 +1,17 @@
-"""Health report over the Hugging Face archive for one UTC day.
+"""Asks once a day whether collection is actually working.
 
     python scheduler/daily_check.py [--day YYYY-MM-DD]     (default: yesterday)
 
-Counts the captures that landed that day with their status and coverage, the
-longest gap between captures, whether the collector is still alive (age of
-latest.json) and the size of the dataset. Exit 0 when healthy, 1 when something
-is wrong, 3 without HF_TOKEN and HF_REPO. Writes a summary to
-$GITHUB_STEP_SUMMARY when present, so the health workflow shows it.
+Looks at everything that reached the archive on one day and answers four
+questions. How many captures arrived and were they good. Was there a long gap
+where nothing was collected. Is the collector still running now. Is the
+archive filling up.
+
+The answer is a table, printed and also attached to the workflow run so it can
+be read without opening logs. Exits 1 if anything looks wrong, which turns the
+scheduled run red.
+
+Needs HF_TOKEN and HF_REPO.
 """
 
 import argparse
@@ -17,12 +22,14 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-# The collection workflow triggers every 10 minutes and a capture takes about
-# 13, so a perfect day gives roughly 96 captures 15 minutes apart.
-MIN_CAPTURES = 48          # fewer usable captures than this is a problem
-MAX_BAD = 12               # partial, failed or unreadable captures allowed
-MAX_GAP_MIN = 90           # longest allowed gap between captures
-STALE_AFTER_MIN = 45       # latest.json older than this means the collector stopped
+# The workflow triggers every 10 minutes and a whole run takes about 8, so a
+# perfect day is roughly 144 captures 10 minutes apart. The thresholds below
+# are deliberately loose: they catch "collection has stopped or is badly
+# broken", not a few slow runs.
+MIN_CAPTURES = 72          # half a perfect day; fewer usable captures is a problem
+MAX_BAD = 18               # partial, failed or unreadable captures allowed
+MAX_GAP_MIN = 60           # longest allowed gap between captures
+STALE_AFTER_MIN = 30       # latest.json older than this means the collector stopped
 MAX_DATASET_GB = 90.0      # the free private tier is 100 GB
 
 WHEN = re.compile(r"(\d{4}-\d{2}-\d{2})T(\d{2})(\d{2})")

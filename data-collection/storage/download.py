@@ -1,10 +1,16 @@
-"""Download captures from the Hugging Face archive.
+"""Brings captures back from the archive.
 
     python storage/download.py --to captures [--latest 3] [--name <capture>]
 
-Env: HF_TOKEN, HF_REPO. Fetches the newest --latest captures, or one named
-capture, into --to/<name>/: the manifest, then capture.tar.gz unpacked beside it.
-A capture already present there is skipped. Exit codes: 0 done, 3 missing env.
+Fetches the newest few captures, or one by name, and unpacks each into its own
+folder exactly as the collector wrote it. A capture already on disk is left
+alone, so this is safe to run repeatedly.
+
+This is how a fresh deployment gets data without waiting for a capture: the
+site can be built from the archive immediately.
+
+Needs HF_TOKEN and HF_REPO. Exit codes: 0 done, 3 bad setup. A missing or
+empty archive is not an error, it just fetches nothing and says so.
 """
 
 import argparse

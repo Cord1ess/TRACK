@@ -1,5 +1,11 @@
-"""Tile bookkeeping for the TRACK collector: coverage against the expected
-tile set and a per-tile audit file.
+"""Keeps score of what a capture actually got.
+
+    coverage     how many of the tiles we wanted did we get
+    audit_tiles  writes one row per tile: its size, a fingerprint, and how
+                 much traffic is painted on it
+
+The audit file is the record that every tile in a capture is listed and
+accounted for, so a missing or altered tile can be spotted later.
 """
 
 import csv
@@ -37,9 +43,11 @@ def _tile_stats(data: bytes, palette: dict, tolerance: float) -> dict:
 
 
 def audit_tiles(tiles: dict, expected: set, out_dir: Path, cfg: dict) -> dict:
-    """Write tiles.csv.gz (one row per expected tile: bytes, hash, content) and
-    return content totals. The per-download proof that every tile in the
-    dataset is listed with its hash."""
+    """Write one row per tile to tiles.csv.gz and add up the totals.
+
+    Each row holds the tile's position, its size, a fingerprint of its
+    contents and how much of it is painted. A tile we never got is listed as
+    missing rather than left out, so the file always covers the whole area."""
     rows, sum_traffic, sum_opaque, nonempty, coloured, matched = [], 0.0, 0.0, 0, 0, 0
     for (x, y) in sorted(expected):
         data = tiles.get((x, y))

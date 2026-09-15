@@ -1,8 +1,12 @@
-"""Web Mercator / slippy-map math for the TRACK collector.
+"""Turns coordinates into tile positions and back.
 
-Everything geographic goes through this module so capture and decoding agree
-exactly on where a pixel is. Tile convention: standard XYZ (Google / OSM),
-origin top-left, 2^z tiles per axis, `tile_px` pixels per tile (256).
+Online maps cut the world into a grid of square tiles. Zoom in one level and
+every tile becomes four. This file does that arithmetic: which tile covers a
+given place, where a tile's edges are, and how many metres a pixel is worth.
+
+Everything to do with position goes through here, so that the download and the
+later reading of the images agree exactly on where each pixel sits. Counting
+starts at the top left corner of the world.
 """
 
 import math
@@ -51,7 +55,7 @@ def metres_per_pixel(lat: float, z: int, tile_px: int = 256) -> float:
 
 
 def tile_range(bbox: dict, z: int) -> dict:
-    """Inclusive integer tile range covering the bbox."""
+    """The block of tiles covering an area: first and last tile each way."""
     return {
         "x0": math.floor(lon_to_tx(bbox["west"], z)),
         "x1": math.floor(lon_to_tx(bbox["east"], z)),

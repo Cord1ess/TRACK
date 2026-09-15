@@ -1,18 +1,18 @@
-"""Keyless traffic-tile fetching for the TRACK collector.
+"""Downloads one traffic tile from Google.
 
-Google's tile server serves the traffic layer as its own transparent 256 px PNG
-when only that layer is requested. No API key, no browser. This module is the
-ONLY place the tile URL lives.
+Ask Google's map server for the traffic layer on its own and it sends back a
+small transparent image with just the coloured lines on it. No API key and no
+browser needed. This is the only file that knows the address.
 
-    traffic_url(z, x, y)      -> URL of the traffic-only overlay tile
-    validate_tile(data, px)   -> strict integrity check before a tile is accepted
-    fetch(z, x, y, ...)       -> validated bytes or None, with retries and backoff
-    Limiter(rate)             -> token bucket so we stay polite
+    traffic_url    builds the address of one tile
+    validate_tile  refuses anything that is not a whole, correct tile
+    fetch          downloads one tile, retrying if it has to
+    Limiter        holds the whole collector to a set number of requests a second
 
-Every worker thread keeps one HTTPS connection open and reuses it, so the rate
-is set by the limiter alone, not by a TLS handshake per tile. Measured from a
-home connection: clean responses up to about 145 requests a second sustained,
-with no rise in latency. The collector runs well below that (config.json).
+Each worker keeps one connection open and reuses it, rather than starting a new
+encrypted connection for every tile. Google answered cleanly in testing up to
+about 145 requests a second, with no slowdown; the collector runs at a third of
+that, set in config.json.
 """
 
 import http.client
@@ -47,9 +47,12 @@ def traffic_url(z: int, x: int, y: int, incidents: bool = False) -> str:
 
 
 class Limiter:
-    """Token bucket: `rate` requests per second. The jitter is centred on the
-    interval, so the nominal rate is the real one. slow_down() halves the rate
-    for the rest of the run, at most four times."""
+    """Keeps every worker together to a set number of requests a second.
+
+    Each request waits its turn. The wait is jittered a little either side of
+    the gap, so requests do not arrive in a perfectly regular drum beat, but
+    the average comes out at the rate asked for. If Google ever asks us to
+    slow down, slow_down() halves the rate for the rest of the run."""
 
     def __init__(self, rate: float):
         self.interval = 1.0 / rate if rate > 0 else 0.0
@@ -97,10 +100,12 @@ def _drop_connection() -> None:
 
 
 def validate_tile(data: bytes, tile_px: int) -> tuple[bool, str]:
-    """Accept a tile only if it is a COMPLETE, decodable, correctly sized,
-    transparent traffic overlay. Rejects truncated downloads (valid header but
-    cut off mid-stream), HTML error bodies, wrong sizes and opaque base tiles,
-    any of which would silently drop traffic that Google actually served."""
+    """Accept a tile only if it is whole and the right kind of image.
+
+    Catches a download cut off part way, an error page sent instead of an
+    image, the wrong size, and a solid map tile where a see-through traffic
+    tile was expected. Any of those would quietly lose real traffic, so a tile
+    that fails here is fetched again rather than kept."""
     if not data or len(data) < 67:
         return False, "too_small"
     if data[:8] != PNG_SIG:
@@ -121,9 +126,12 @@ def validate_tile(data: bytes, tile_px: int) -> tuple[bool, str]:
 
 def fetch(z: int, x: int, y: int, limiter: Limiter, stats, tile_px: int,
           incidents: bool = False, retries: int = 4, timeout: int = 30):
-    """Fetch one tile; return ((x, y), data | None, reason). Retries on HTTP
-    5xx/429, network errors and integrity failures with capped backoff. A 429
-    or 503 also halves the rate for the rest of the run."""
+    """Download one tile. Returns its position, the image, and why if there is
+    no image.
+
+    Tries again on a server error, a network failure, or an image that does
+    not pass validation, waiting longer between each attempt. If the server
+    says it is too busy, the whole run slows down, not just this tile."""
     path = traffic_url(z, x, y, incidents)[len(f"https://{HOST}"):]
     last = "unknown"
     for attempt in range(retries + 1):
