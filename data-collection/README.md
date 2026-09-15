@@ -24,11 +24,15 @@ collector/
   checks.py          checks before and after a capture
   capture.py         one capture run -> captures/<name>/
   reaudit.py         recompute palette-dependent stats of an existing capture
-storage/             upload.py and download.py: a private Hugging Face dataset as the archive,
-                     two files per capture (manifest.json and capture.tar.gz, about 2.5 MB)
+storage/             upload.py, download.py and migrate.py: a private Hugging Face dataset
+                     is where captures live. Two files per capture (manifest.json and
+                     capture.tar.gz, about 3 MB)
 scheduler/           daily_check.py: health report over the archive
 tests/selftest.py
-captures/            not committed
+captures/            not committed, and normally empty: a capture is archived and the
+                     local copy removed. Workflows fetch back the newest few to build the
+                     site; `storage/download.py --to captures --latest 3` does the same
+                     locally.
 ```
 
 The scheduled capture is the GitHub Actions workflow in

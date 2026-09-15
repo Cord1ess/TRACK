@@ -60,6 +60,17 @@ jobs:
           key: captures-${{ github.run_id }}
           restore-keys: captures-
 
+      # The captures live in the archive now, not on disk. The Actions cache is
+      # a shortcut, not the source: when it is cold, or a key has been evicted,
+      # the site would otherwise be built from the single capture this run
+      # takes, and the timeline would collapse to one point. Fetching the
+      # newest few back costs seconds and keeps the site whole.
+      - name: Fill the captures folder from the archive
+        if: env.HF_TOKEN != ''
+        working-directory: data-collection
+        continue-on-error: true            # a cold archive must not stop a capture
+        run: python storage/download.py --to captures --latest "$KEEP"
+
       - name: Capture
         id: capture
         working-directory: data-collection

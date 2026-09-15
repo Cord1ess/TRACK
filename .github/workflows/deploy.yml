@@ -62,9 +62,12 @@ jobs:
           key: captures-none
           restore-keys: captures-
 
-      - name: Fetch the newest captures from the archive when the cache is empty
+      # The archive is where captures live; the cache above is only a shortcut.
+      # download.py skips whatever the cache already provided.
+      - name: Fetch the newest captures from the archive
         if: env.HF_TOKEN != ''
         working-directory: data-collection
+        continue-on-error: true            # publish the graph rather than fail
         run: python storage/download.py --to captures --latest "$KEEP"
 
       - name: Run the pipeline on the newest capture, if there is one
