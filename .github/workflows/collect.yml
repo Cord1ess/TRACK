@@ -25,6 +25,7 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  actions: write                         # a finished run starts the next one
 
 env:
   KEEP: 3                                # captures kept on the site and between runs
@@ -94,3 +95,12 @@ jobs:
 
       - id: deploy
         uses: actions/deploy-pages@v4
+
+      # GitHub's schedule is best effort: it did not fire once in the hour
+      # after this file landed. So a finished run starts the next one itself,
+      # and the schedule only has to restart the chain after a failed capture.
+      - name: Start the next run
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run collect.yml --ref "${{ github.ref_name }}"

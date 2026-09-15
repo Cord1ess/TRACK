@@ -36,18 +36,20 @@ table, and the layer index.
 
 Two workflows. `deploy.yml` publishes the site on every push that changes the
 app or the algorithms, from the data already collected, so the site is live
-before the first capture. `collect.yml` is triggered every 10 minutes: capture,
-pipeline, build, deploy. Runs never overlap. A capture takes about 13 minutes
-and the rest of a run about 5, so new data lands about every 20 minutes;
-GitHub's scheduler can add delay on top. A failed capture stops the run and
-the site keeps its last data. The panel on the page shows the latest capture,
-its age, when the site was built, and links to the run history.
+before the first capture. `collect.yml` does one cycle: capture, pipeline,
+build, deploy, and then starts the next run itself, so one manual start keeps
+collection going. Runs never overlap. A capture takes about 13 minutes and
+the rest of a run about 5, so new data lands about every 20 minutes. A failed
+capture stops the run and the site keeps its last data; the 10-minute
+schedule restarts the chain, when GitHub honours it. The page shows the
+latest capture and its age, the current run and how long it has been going,
+when the site was built, and links to the run history.
 
 Setup, once:
 
 1. Settings, Pages, Build and deployment, Source: GitHub Actions.
 2. Optional: repository secrets `HF_TOKEN` and `HF_REPO` archive every capture to a private Hugging Face dataset, and let a fresh deploy start from the newest captures there. Without them that step is skipped.
-3. Actions, deploy, Run workflow. collect runs on its schedule from then on.
+3. Actions, deploy, Run workflow, to publish the site. Then Actions, collect, Run workflow, once: each run starts the next.
 
 The site keeps the last 3 captures (`KEEP` in the workflow). The page checks
 `data/manifest.json` every 5 seconds and swaps in new data without a reload.
