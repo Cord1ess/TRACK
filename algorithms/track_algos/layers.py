@@ -266,7 +266,9 @@ def astar_routes(graph, weight_of):
                                  km=round(km, 1)))
             legs.append({"route": f"{a} to {b}", "mode": mode, "minutes": round(secs / 60.0, 1),
                          "km": round(km, 1)})
-    for name in {p for r in ROUTES for p in r}:
+    for name in sorted({p for r in ROUTES for p in r}):   # sorted: a set iterates in a different
+                                                          # order each process, so the file would
+                                                          # otherwise differ between identical runs
         feats.append(feature("Point", list(PLACES[name]), color="#111827", name=name))
     slow = [l for l in legs if l["mode"] == "congested"]
     fast = {l["route"]: l for l in legs if l["mode"] == "free_flow"}

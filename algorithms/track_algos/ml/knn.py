@@ -60,22 +60,28 @@ class KNNRegressor:
         return self
 
     def kneighbors(self, X, chunk: int = 2048):
-        """Return (distances, indices), both (n_queries, k), nearest first."""
+        """Return (distances, indices), both (n_queries, k), nearest first.
+
+        Ranking by squared distance gives the same order as by distance, so the
+        square root is taken only on the k neighbours kept, not on every pair.
+        Stays in float64: in single precision 473 of 98,302 Dhaka roads picked a
+        different neighbour and one prediction moved by 38 weight points."""
         X = np.asarray(X, dtype=float)
         k = min(self.k, self.X.shape[0])
         dists = np.empty((X.shape[0], k), dtype=float)
         idxs = np.empty((X.shape[0], k), dtype=np.int64)
+        stored_norm = (self.X ** 2).sum(1)[None, :]
         for s in range(0, X.shape[0], chunk):
             q = X[s: s + chunk]
             # |a - b|^2 = |a|^2 + |b|^2 - 2 a.b
-            d2 = (q ** 2).sum(1)[:, None] + (self.X ** 2).sum(1)[None, :] - 2.0 * (q @ self.X.T)
-            d = np.sqrt(np.maximum(d2, 0.0))
-            part = np.argpartition(d, k - 1, axis=1)[:, :k]
-            dpart = np.take_along_axis(d, part, axis=1)
+            d2 = (q ** 2).sum(1)[:, None] + stored_norm - 2.0 * (q @ self.X.T)
+            np.maximum(d2, 0.0, out=d2)
+            part = np.argpartition(d2, k - 1, axis=1)[:, :k]
+            dpart = np.take_along_axis(d2, part, axis=1)
             order = np.argsort(dpart, axis=1)
             idxs[s: s + chunk] = np.take_along_axis(part, order, axis=1)
             dists[s: s + chunk] = np.take_along_axis(dpart, order, axis=1)
-        return dists, idxs
+        return np.sqrt(dists, out=dists), idxs
 
     @staticmethod
     def combine(values, dists, weighted: bool = True):
