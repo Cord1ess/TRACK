@@ -279,17 +279,34 @@
 
 <!-- ───────────────────────────── timeline ───────────────────────────── -->
 <div id="timeline">
-  <button class="icon play" id="playBtn" title="Play (space)" aria-label="Play">
-    <svg id="playIcon" viewBox="0 0 16 16"><path d="M5 3.2l7.2 4.8-7.2 4.8z" fill="currentColor"/></svg>
-  </button>
-  <div class="track" id="track" tabindex="0" role="slider" aria-label="Time">
-    <div class="days" id="trackDays"></div>
-    <div class="marks" id="trackMarks"></div>
-    <div class="head" id="trackHead"></div>
+  <div class="tlhead">
+    <div class="seg small" id="series" role="group" aria-label="Timeline">
+      <button data-series="scheduled" class="on" title="The 10-minute collection sequence">Scheduled</button>
+      <button data-series="test" title="Captures taken by hand">Tests</button>
+    </div>
+    <span class="tlcount" id="seriesCount"></span>
+    <div class="grow"></div>
+    <div class="seg small" id="playSpeed" role="group" aria-label="Playback speed">
+      <button data-speed="0.5">0.5x</button>
+      <button data-speed="1" class="on">1x</button>
+      <button data-speed="2">2x</button>
+      <button data-speed="4">4x</button>
+    </div>
   </div>
-  <div class="readout">
-    <strong id="slotLabel">—</strong>
-    <span id="slotState">no data</span>
+  <div class="tlbody">
+    <button class="icon play" id="playBtn" title="Play (space)" aria-label="Play">
+      <svg id="playIcon" viewBox="0 0 16 16"><path d="M5 3.2l7.2 4.8-7.2 4.8z" fill="currentColor"/></svg>
+    </button>
+    <div class="track" id="track" tabindex="0" role="slider" aria-label="Time">
+      <div class="days" id="trackDays"></div>
+      <div class="span" id="trackSpan"></div>
+      <div class="marks" id="trackMarks"></div>
+      <div class="head" id="trackHead"></div>
+    </div>
+    <div class="readout">
+      <strong id="slotLabel">—</strong>
+      <span id="slotState">no data</span>
+    </div>
   </div>
 </div>
 
@@ -321,7 +338,7 @@
       <dt>1 / 2</dt><dd>Light / dark theme</dd>
       <dt>\</dt><dd>Hide the panel</dd>
       <dt>Space</dt><dd>Play or pause the timeline</dd>
-      <dt>⇧ ← →</dt><dd>Step the timeline (plain arrows pan the map)</dd>
+      <dt>⇧ ← →</dt><dd>Previous or next capture (plain arrows pan the map)</dd>
     </dl>
     <button class="btn" id="helpClose">Close</button>
   </div>

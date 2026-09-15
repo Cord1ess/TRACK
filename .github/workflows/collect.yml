@@ -66,7 +66,7 @@ jobs:
         run: |
           NAME="dhaka-$(date -u +%Y-%m-%dT%H%MZ)"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
-          python collector/capture.py --name "$NAME"
+          python collector/capture.py --name "$NAME" --series scheduled
 
       - name: Decode, impute, layers
         working-directory: algorithms

@@ -2,10 +2,13 @@
 
     python scheduler/daily_check.py [--day YYYY-MM-DD]     (default: yesterday)
 
-Looks at everything that reached the archive on one day and answers four
-questions. How many captures arrived and were they good. Was there a long gap
-where nothing was collected. Is the collector still running now. Is the
-archive filling up.
+Looks at the scheduled captures that reached the archive on one day and answers
+four questions. How many arrived and were they good. Was there a long gap where
+nothing was collected. Is the collector still running now. Is the archive
+filling up.
+
+Only the scheduled series counts. A capture taken by hand is not part of the
+sequence the research depends on, so it neither fills a gap nor pads the total.
 
 The answer is a table, printed and also attached to the workflow run so it can
 be read without opening logs. Exits 1 if anything looks wrong, which turns the
@@ -87,6 +90,8 @@ def main() -> int:
         d, hhmm = when_of(name, m)
         if d != day:
             continue
+        if m.get("series", "test") != "scheduled":
+            continue                             # a capture taken by hand is not part of the sequence
         st = m.get("status", "failed")
         counts[st if st in counts else "failed"] += 1
         total_bytes += m.get("bytes_tiles", 0)

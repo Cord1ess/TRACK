@@ -16,7 +16,7 @@ import {
 import { applyGraph, applyBreath, graphExprs, syncBreathing } from "./graph.js";
 import { applyLayerOpacity } from "./layers.js";
 import { selectCapture } from "./captures.js";
-import { setSlot, togglePlay } from "./timeline.js";
+import { setSeries, setSpeed, stepCapture, togglePlay } from "./timeline.js";
 import { setInspect } from "./inspector.js";
 import { setTheme } from "./theme.js";
 import { renderReadouts } from "./legend.js";
@@ -283,6 +283,10 @@ export function bindControls() {
   $("reloadModel").onclick = reloadModel;
   $("abFlip").onclick = abFlip;
   $("playBtn").onclick = togglePlay;
+  document.querySelectorAll("#series button")
+    .forEach((b) => b.onclick = () => setSeries(b.dataset.series));
+  document.querySelectorAll("#playSpeed button")
+    .forEach((b) => b.onclick = () => setSpeed(b.dataset.speed));
 
   bindKeys();
 }
@@ -320,7 +324,7 @@ function bindKeys() {
       // plain arrows stay with the map for panning; the timeline takes them
       // only when the track has focus or shift is held
       if (document.activeElement !== $("track") && !e.shiftKey) return;
-      setSlot(state.timeline.index + (k === "arrowleft" ? -1 : 1), true);
+      stepCapture(k === "arrowleft" ? -1 : 1);
     }
     else return;
     e.preventDefault();

@@ -89,6 +89,7 @@ def main() -> int:
     captured = manifest.get("captured_utc") or manifest.get("slot_utc")
     latest = {
         "captured_utc": captured, "slot_utc": captured, "status": manifest.get("status"),
+        "series": manifest.get("series", "test"),
         "coverage_pct": manifest.get("coverage_pct"), "tiles_nonempty": manifest.get("tiles_nonempty"),
         "expected_tiles": manifest.get("expected_tiles"), "bytes_tiles": manifest.get("bytes_tiles"),
         "fetch_seconds": manifest.get("fetch_seconds"),

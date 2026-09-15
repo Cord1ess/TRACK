@@ -168,6 +168,9 @@ def list_captures() -> list[dict]:
             "name": d.name, "zoom": m.get("zoom"), "bbox": m.get("bbox"),
             "tile_range": m.get("tile_range"), "coverage_pct": m.get("coverage_pct"),
             "captured_utc": m.get("captured_utc"), "status": m.get("status", "?"),
+            # captures taken before the two timelines existed carry no series;
+            # they were all taken by hand, so they are tests
+            "series": m.get("series", "test"),
             "tiles_nonempty": m.get("tiles_nonempty"), "expected_tiles": m.get("expected_tiles"),
             "note": m.get("note", ""),
         })

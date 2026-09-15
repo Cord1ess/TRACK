@@ -1,7 +1,14 @@
 """Takes one snapshot of Dhaka's traffic.
 
-    python collector/capture.py --name <capture-name> [--bbox N,S,E,W] [--zoom 17]
+    python collector/capture.py --name <capture-name> [--series scheduled|test]
+                                [--bbox N,S,E,W] [--zoom 17]
                                 [--rate 96] [--workers 32] [--fill-gaps] [--incidents]
+
+A capture belongs to one of two series, recorded in its manifest. `scheduled`
+is the unbroken run of captures the collection workflow takes every 10 minutes,
+which is the one the research depends on. `test` is everything else: a capture
+taken by hand while working on something. The page shows them as two separate
+timelines, so a test never appears as a gap or a spike in the real sequence.
 
 This is the file that does the collecting. It works out which tiles cover the
 city, downloads all 4,928 of them, checks what came back, and writes the lot
@@ -138,13 +145,14 @@ def sweep(targets, cfg, limiter, stats, log, label):
     return got
 
 
-def run(cfg: dict, name: str, out_root: Path, log: Log) -> tuple[Path | None, dict]:
+def run(cfg: dict, name: str, out_root: Path, log: Log, series: str = "test") -> tuple[Path | None, dict]:
     started = utc_now()
     t0 = time.time()
     stage = Stage()
     out_dir = out_root / name
     manifest = {"collector_version": VERSION, "name": name, "source": "google-consumer-traffic-tiles-keyless",
-                "captured_utc": started, "zoom": cfg["zoom"], "tile_px": cfg["tile_px"],
+                "captured_utc": started, "series": series,
+                "zoom": cfg["zoom"], "tile_px": cfg["tile_px"],
                 "bbox": cfg["bbox"], "incidents": cfg["incidents"], "palette": cfg["palette"],
                 "palette_tolerance": cfg["palette_tolerance"], "status": "failed",
                 "note": "", "checks": {}, "warnings": []}
@@ -165,7 +173,7 @@ def run(cfg: dict, name: str, out_root: Path, log: Log) -> tuple[Path | None, di
     (out_dir / "tiles").mkdir(parents=True, exist_ok=True)
     expected = sorted(grid.expected_tiles(cfg["bbox"], cfg["zoom"]))
     log(f"[capture] {name}: {len(expected)} tiles at z{cfg['zoom']}, ~{cfg['rate']}/s, "
-        f"incidents={cfg['incidents']}, fill_gaps={cfg['fill_gaps']}")
+        f"series={series}, incidents={cfg['incidents']}, fill_gaps={cfg['fill_gaps']}")
 
     limiter, stats = Limiter(cfg["rate"]), Counter()
     t_fetch = time.time()
@@ -265,6 +273,9 @@ def main() -> int:
     ap.add_argument("--zoom", type=int)
     ap.add_argument("--rate", type=float)
     ap.add_argument("--workers", type=int)
+    ap.add_argument("--series", choices=("scheduled", "test"), default="test",
+                    help="which timeline this capture belongs to; the collection "
+                         "workflow passes scheduled, anything run by hand is a test")
     ap.add_argument("--fill-gaps", action="store_true")
     ap.add_argument("--incidents", action="store_true")
     ap.add_argument("--out", type=Path, default=ROOT / "captures")
@@ -280,7 +291,7 @@ def main() -> int:
     cfg["incidents"] = cfg.get("incidents", False) or args.incidents
 
     log = Log()
-    out_dir, manifest = run(cfg, args.name, args.out, log)
+    out_dir, manifest = run(cfg, args.name, args.out, log, series=args.series)
     if out_dir is None:
         log(f"[capture] {manifest['note']}")
         return 3

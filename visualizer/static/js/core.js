@@ -100,7 +100,14 @@ export const state = {
   },
   weights: { g: 25, o: 55, r: 85, d: 105 }, jam: 4, beta: 4,
   inspect: false, reloading: false, booted: false,
-  timeline: { start: null, slots: 672, index: 0, playing: false, available: new Map(), timer: null },
+  timeline: {
+    start: null, slots: 672, index: 0, playing: false, timer: null,
+    series: "scheduled",   // which of the two timelines is showing
+    available: new Map(),  // slot index -> capture name, for the series showing
+    order: [],             // those slot indexes in time order, for stepping
+    outside: 0,            // captures in this series that fall outside the drawn week
+    speed: 1,
+  },
 };
 
 export const map = new maplibregl.Map({
