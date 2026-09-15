@@ -163,9 +163,10 @@ def main() -> int:
     # to the run history; elsewhere there is nothing to link to
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     runs_url = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/actions" if repo else ""
+    runs_api = f"{os.environ.get('GITHUB_API_URL', 'https://api.github.com')}/repos/{repo}/actions/runs" if repo else ""
     manifest = {
         "built_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "min_zoom": server.MIN_ZOOM, "keep": args.keep, "runs_url": runs_url,
+        "min_zoom": server.MIN_ZOOM, "keep": args.keep, "runs_url": runs_url, "runs_api": runs_api,
         "captures": caps, "model": model, "graph": graph, "layers": layers,
     }
     (out / "data" / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")

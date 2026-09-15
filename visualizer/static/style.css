@@ -325,3 +325,11 @@ body.dark #timeline .play:hover { filter: brightness(1.3); }
 .algo.loading .row > span:first-child::after { content: "loading..."; font-size: 11px; color: var(--text-3); }
 .hint a { color: var(--accent); text-decoration: none; }
 .hint a:hover { text-decoration: underline; }
+
+/* the current workflow run, next to the capture control on the static site */
+.run { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
+.run a { color: inherit; text-decoration: none; }
+.run a:hover { text-decoration: underline; }
+.run i { width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); flex: none; }
+.run.busy i { background: var(--on); animation: run-pulse 1.4s ease-in-out infinite; }
+@keyframes run-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }

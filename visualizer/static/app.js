@@ -110,6 +110,7 @@ const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) =>
 const state = {
   minZoom: 8, captures: [], capture: null,
   layers: [], activeLayers: new Set(), layerData: {}, layerOpacity: 0.9,
+  runs: { collect: null, deploy: null, at: 0 },   // the latest workflow runs, static site only
   theme: "light", appliedTheme: "light", themePending: false,
   showMap: true, labels: true, dim: 0,
   origBg: THEME_BG.light, baseLayers: [], baseHidden: new Set(),
@@ -1004,6 +1005,14 @@ function fillCaptureSelect() {
   const sel = $("capture");
   const current = sel.value;
   sel.innerHTML = "";
+  if (!state.captures.length) {
+    const o = document.createElement("option");
+    o.value = "";
+    o.textContent = "no capture yet";
+    o.disabled = o.selected = true;
+    sel.appendChild(o);
+    return;
+  }
   for (const c of state.captures) {
     const o = document.createElement("option");
     o.value = c.name;
@@ -1051,6 +1060,16 @@ const ageText = (ms) => {
   const m = Math.round(ms / 60000);
   return m < 1 ? "under a minute ago" : m < 60 ? `${m} min ago` : `${Math.floor(m / 60)} h ${m % 60} min ago`;
 };
+function runSentence() {
+  const c = state.runs.collect;
+  if (!c) return state.runs.at ? "no collection run yet" : null;
+  const n = `#${c.run_number}`;
+  if (c.status !== "completed") {
+    const mins = Math.max(0, Math.round((Date.now() - Date.parse(c.run_started_at || c.created_at)) / 60000));
+    return `collection run ${n} in progress, ${mins} min in; a run takes about 20`;
+  }
+  return `last collection run ${n} ${escapeHtml(c.conclusion || "ended")} at ${(c.updated_at || "").slice(11, 16)} UTC`;
+}
 function renderCollection() {
   const el = $("collectInfo");
   if (!el) return;
@@ -1064,6 +1083,8 @@ function renderCollection() {
   } else {
     parts.push("No capture yet. The map shows the road graph until the first collection run finishes");
   }
+  const run = runSentence();
+  if (run) parts.push(run);
   if (m && m.built_utc) parts.push(`site built ${escapeHtml(m.built_utc.slice(11, 16))} UTC`);
   parts.push(STATIC
     ? "collection is triggered every 10 min and a capture takes about 13, so new data lands about every 20 min"
@@ -1071,6 +1092,44 @@ function renderCollection() {
   let html = parts.join(" · ");
   if (m && m.runs_url) html += ` · <a href="${escapeHtml(m.runs_url)}" target="_blank" rel="noopener">run history</a>`;
   if (el.innerHTML !== html) el.innerHTML = html;
+}
+
+/* The current run, from GitHub's public API: the repository is public, the
+   API allows cross-origin reads, and 60 requests an hour need no token, so
+   the page asks every two minutes and keeps the last answer when refused. */
+const RUN_POLL = 120000;
+async function fetchRuns() {
+  const m = STATIC ? (manifest || await loadManifest()) : null;
+  if (!m || !m.runs_api) return;
+  try {
+    const r = await fetch(`${m.runs_api}?per_page=6`, { headers: { Accept: "application/vnd.github+json" } });
+    if (r.ok) {
+      const runs = (await r.json()).workflow_runs || [];
+      const pick = (name) => runs.find((x) => x.name === name) || null;
+      state.runs = { collect: pick("collect"), deploy: pick("deploy"), at: Date.now() };
+    }
+  } catch { /* offline or rate limited: keep the last answer */ }
+  renderRunStatus();
+  renderCollection();
+}
+function renderRunStatus() {
+  const el = $("runStatus");
+  if (!el) return;
+  const m = STATIC ? manifest : null;
+  const brief = (run, verb) => {
+    if (!run) return null;
+    if (run.status !== "completed") {
+      const mins = Math.max(0, Math.round((Date.now() - Date.parse(run.run_started_at || run.created_at)) / 60000));
+      return { busy: true, text: `${verb} #${run.run_number}, ${mins} min in` };
+    }
+    return { busy: false, text: `last ${verb} ${run.conclusion || "ended"} ${(run.updated_at || "").slice(11, 16)} UTC` };
+  };
+  const c = brief(state.runs.collect, "collection"), d = brief(state.runs.deploy, "deploy");
+  const show = !m || !m.runs_api ? null : (c && c.busy) ? c : (d && d.busy) ? d : c || d;
+  el.hidden = !show;
+  if (!show) return;
+  el.classList.toggle("busy", show.busy);
+  el.innerHTML = `<i></i><a href="${escapeHtml(m.runs_url || "#")}" target="_blank" rel="noopener">${escapeHtml(show.text)}</a>`;
 }
 
 /* ═════════════════════════ model data ═════════════════════════ */
@@ -1672,6 +1731,8 @@ map.on("load", async () => {
   } catch { /* defaults are fine */ }
   await loadCaptures();
   buildTimeline();
+  fetchRuns();
+  setInterval(fetchRuns, RUN_POLL);
   await loadLayerList();
   applyModelInfo(await fetchModelInfo(), { boot: true });
   applyGraphInfo(await fetchGraphInfo());
