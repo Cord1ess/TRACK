@@ -4,6 +4,7 @@
 
 Everything the dev server answers live is written as files:
 
+    index.html, style.css, js/   the page and its ES modules
     data/manifest.json           what /api/config, /api/captures, /api/model,
                                  /api/graph and /api/layers answer, in one file
     data/model-<part>.<v>.json   the traffic model, versioned by content
@@ -41,8 +42,15 @@ import server                   # noqa: E402  (capture listing, tile pyramid, cl
 
 
 def copy_app(out: Path) -> None:
-    for name in ("index.html", "app.js", "style.css"):
+    """The page, its stylesheet, and the js/ folder of ES modules.
+
+    Every module has to travel, not just the entry point: a module that 404s
+    fails silently and the page comes up blank. The folder is removed first so
+    a module deleted from the source does not linger on the site."""
+    for name in ("index.html", "style.css"):
         shutil.copyfile(HERE / "static" / name, out / name)
+    shutil.rmtree(out / "js", ignore_errors=True)
+    shutil.copytree(HERE / "static" / "js", out / "js")
     html = (out / "index.html").read_text(encoding="utf-8")
     html = html.replace("<head>", '<head>\n  <meta name="track-static" content="1">', 1)
     # the dev server serves the assets under /static/; on the site they sit
@@ -106,10 +114,16 @@ def sync_tiles(caps: list[dict], out: Path) -> None:
 
 def clear_stale(out: Path) -> None:
     """Everything except the tiles is rewritten every build, so remove the old
-    copies first: versioned vector payloads would otherwise pile up."""
+    copies first.
+
+    Versioned vector payloads would otherwise pile up, and a file the build no
+    longer writes would linger for good now that the site folder is reused:
+    app.js is left behind from before the app became ES modules."""
     for p in (out / "data").glob("*.json"):
         p.unlink()
     shutil.rmtree(out / "data" / "layers", ignore_errors=True)
+    for name in ("app.js",):                     # written by an older build
+        (out / name).unlink(missing_ok=True)
 
 
 def write_vector(service, parts: tuple, out: Path, prefix: str) -> dict:
