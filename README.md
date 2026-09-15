@@ -43,8 +43,9 @@ the site keeps its last data.
 
 Setup, once:
 
-1. Optional: repository secrets `HF_TOKEN` and `HF_REPO` archive every capture to a private Hugging Face dataset, and let a fresh deploy start from the newest captures there. Without them that step is skipped.
-2. Actions, deploy, Run workflow. The first run enables Pages. collect runs on its schedule from then on.
+1. Settings, Pages, Build and deployment, Source: GitHub Actions.
+2. Optional: repository secrets `HF_TOKEN` and `HF_REPO` archive every capture to a private Hugging Face dataset, and let a fresh deploy start from the newest captures there. Without them that step is skipped.
+3. Actions, deploy, Run workflow. collect runs on its schedule from then on.
 
 The site keeps the last 3 captures (`KEEP` in the workflow). The page checks
 `data/manifest.json` every 5 seconds and swaps in new data without a reload.

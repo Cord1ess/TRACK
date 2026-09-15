@@ -2,6 +2,9 @@
 # the app or the algorithms, and on demand. This is what makes the site live
 # before the first capture. collect.yml updates it after every capture.
 #
+# One-time setup: Settings -> Pages -> Build and deployment -> Source: GitHub
+# Actions. The workflow token cannot turn Pages on by itself.
+#
 # Data, in order of preference: the captures kept in the Actions cache by the
 # last collection run; the newest captures in the Hugging Face archive when the
 # cache is empty and the secrets are set; otherwise the road graph alone.
@@ -86,8 +89,6 @@ jobs:
         run: python visualizer/build_site.py --out site --keep "$KEEP"
 
       - uses: actions/configure-pages@v5
-        with:
-          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:

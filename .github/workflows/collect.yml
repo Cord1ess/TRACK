@@ -87,8 +87,6 @@ jobs:
           key: captures-${{ github.run_id }}
 
       - uses: actions/configure-pages@v5
-        with:
-          enablement: true           # turns Pages on (source: GitHub Actions) if it is not yet
 
       - uses: actions/upload-pages-artifact@v3
         with:
