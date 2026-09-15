@@ -26,9 +26,8 @@ import {
   applyGraph, applyGraphInfo, breathAlive, fetchGraphInfo, graphUrl,
 } from "./graph.js";
 import { loadLayerList } from "./layers.js";
-import {
-  RUN_POLL, fetchRuns, loadCaptures, refreshCaptures,
-} from "./captures.js";
+import { loadCaptures, refreshCaptures } from "./captures.js";
+import { RUN_POLL, fetchRuns, render as renderCollectBar, startTicking } from "./collection.js";
 import { bindTrack, buildTimeline } from "./timeline.js";
 import { renderReadouts } from "./legend.js";
 import { bindControls } from "./controls.js";
@@ -105,6 +104,7 @@ map.on("load", async () => {
   buildTimeline();
   fetchRuns();
   setInterval(fetchRuns, RUN_POLL);
+  startTicking();          // the elapsed part counts up between polls
   await loadLayerList();
   applyModelInfo(await fetchModelInfo(), { boot: true });
   applyGraphInfo(await fetchGraphInfo());
@@ -126,6 +126,9 @@ map.on("load", async () => {
 
 window.__track = {
   state, T, MINOR_FADE, warnings, events, styleReady, ensureLayers, reconcile,
+  // the status bar draws from state.runs; exposing its renderer lets a test
+  // drive states that live data only reaches once every ten minutes
+  renderCollectBar,
   health() {
     const ready = styleReady();
     const layer = (id) => {

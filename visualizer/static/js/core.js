@@ -73,7 +73,9 @@ export const WORLD = { type: "Feature", geometry: { type: "Polygon",
 export const state = {
   minZoom: 8, captures: [], capture: null,
   layers: [], activeLayers: new Set(), layerData: {}, layerOpacity: 0.9,
-  runs: { collect: null, deploy: null, at: 0 },   // the latest workflow runs, static site only
+  // the latest workflow runs, the steps of the one in progress, and what
+  // each step cost last time it finished. Static site only.
+  runs: { collect: null, deploy: null, at: 0, steps: null, stepCosts: {} },
   theme: "light", appliedTheme: "light", themePending: false,
   showMap: true, labels: true, dim: 0,
   origBg: THEME_BG.light, baseLayers: [], baseHidden: new Set(),

@@ -159,6 +159,41 @@ def copy_layers(out: Path) -> list[dict]:
     return entries
 
 
+def stage_history(caps: list[dict], keep: int = 12) -> dict:
+    """What a capture has actually cost, from the manifests we still hold.
+
+    The page uses this to estimate how long the run in progress has left. A
+    measured median beats a number typed into the source, which goes stale the
+    moment the rate or the grid changes."""
+    seen = []
+    for c in caps:
+        mp = server.CAPTURES / c["name"] / "manifest.json"
+        if not mp.exists():
+            continue
+        try:
+            m = json.loads(mp.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if m.get("stage_seconds") and m.get("total_seconds"):
+            seen.append((m.get("captured_utc", ""), m["stage_seconds"], m["total_seconds"]))
+    if not seen:
+        return {}
+    seen.sort(reverse=True)
+    seen = seen[:keep]
+    median = lambda xs: sorted(xs)[len(xs) // 2]
+    names = []
+    for _, s, _ in seen:
+        for k in s:
+            if k not in names:
+                names.append(k)
+    return {
+        "samples": len(seen),
+        "capture_seconds": round(median([t for _, _, t in seen]), 1),
+        "stages": [{"name": n, "seconds": round(median([s.get(n, 0) for _, s, _ in seen]), 1)}
+                   for n in names],
+    }
+
+
 def folder_size(p: Path) -> int:
     return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
 
@@ -238,6 +273,7 @@ def main() -> int:
         "built_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "min_zoom": server.MIN_ZOOM, "keep": args.keep, "runs_url": runs_url, "runs_api": runs_api,
         "captures": caps, "model": model, "graph": graph, "layers": layers,
+        "timing": stage_history(caps),
     }
     (out / "data" / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
     print("  time    " + ", ".join(f"{k} {v}s" for k, v in stage.seconds.items()), flush=True)
