@@ -267,6 +267,17 @@ def build_pyramid(name: str, quiet: bool = False, clean: bool = False) -> None:
 # ---------------------------------------------------------------- layers
 
 def list_layers() -> list[dict]:
+    # the pipeline's layers stage writes an index with a description and legend
+    # per layer; when it exists, that is the list
+    index = OUTPUT / "layers" / "index.json"
+    if index.exists():
+        try:
+            data = json.loads(index.read_text(encoding="utf-8"))
+            return [{**l, "id": l["id"], "url": f"/layers/output/layers/{l['file']}",
+                     "built_utc": data.get("built_utc", ""), "slot_utc": data.get("slot_utc", "")}
+                    for l in data.get("layers", []) if (OUTPUT / "layers" / l["file"]).exists()]
+        except Exception as e:
+            print(f"  layers index unreadable ({e}); scanning instead", flush=True)
     layers = []
     roots = [("output", OUTPUT)]
     if CAPTURES.exists():

@@ -1,22 +1,10 @@
-"""A* search: the router at the heart of TRACK.
+"""A* search: the least-cost path from one node to another.
 
-A* finds the least-cost path from ONE origin to ONE destination. It is Dijkstra
-with a sense of direction: every node's priority is
-    f(n) = g(n) + h(n)
-where g is the cost so far and h is a heuristic estimate of the remaining cost.
-As long as h never overestimates (it is "admissible"), the first time the goal
-is popped its path is optimal. We use straight-line (haversine) distance divided
-by the fastest speed in the network, which can never exceed the real travel time,
-so optimality holds.
-
-Why A* and not Dijkstra here: every query in the assignment loop is
-origin -> destination, and the heuristic keeps the search pointed at the
-destination instead of flooding the whole city. That saving grows with graph
-size. Dijkstra (one-to-all) lives next door for the cases that need it.
-
-`cost_fn(edge)` is injected, so the same router works on free-flow time, on
-BPR-congested time inside the assignment loop, or on predicted future costs
-for the personal A-to-B feature.
+Each node's priority is f = g + h, cost so far plus an estimate of the cost
+left. The estimate is straight-line distance at the network's top speed, which
+never exceeds the real travel time, so the first path found is the best one.
+The edge cost function is injected: free-flow time, BPR-congested time, or
+anything else.
 """
 
 import heapq
@@ -27,7 +15,7 @@ from ..graph.road_graph import Edge, RoadGraph
 
 
 def haversine_heuristic(graph: RoadGraph, max_speed_kmph: float | None = None) -> Callable:
-    """Admissible heuristic: straight-line distance at the network's top speed."""
+    """Straight-line time at the network's top speed; never overestimates."""
     top = max_speed_kmph or max((e.free_flow_kmph for e in graph.edges.values()), default=50.0)
     top_ms = top / 3.6
 
@@ -41,25 +29,20 @@ def haversine_heuristic(graph: RoadGraph, max_speed_kmph: float | None = None) -
 def astar(graph: RoadGraph, start: Hashable, goal: Hashable,
           cost_fn: Callable[[Edge], float] | None = None,
           heuristic: Callable[[Hashable, Hashable], float] | None = None):
-    """Return (node_path, edge_id_path, total_cost) or (None, None, inf) if unreachable.
-
-    graph:      RoadGraph (nodes + directed edges)
-    cost_fn:    edge -> non-negative cost; default free-flow travel time (s)
-    heuristic:  (node, goal) -> estimate of remaining cost; default haversine time
-    """
+    """Return (node_path, edge_id_path, total_cost), or (None, None, inf) if unreachable."""
     cost_fn = cost_fn or (lambda e: e.free_flow_s)
     heuristic = heuristic or haversine_heuristic(graph)
     if start == goal:
         return [start], [], 0.0
 
     g_score = {start: 0.0}
-    came_from: dict = {}          # node -> (prev_node, edge_id)
+    came_from: dict = {}          # node -> (previous node, edge id)
     closed = set()
-    counter = 0                    # tie-breaker keeps heap ordering deterministic
+    counter = 0                   # tie-breaker so the heap order is deterministic
     frontier = [(heuristic(start, goal), counter, start)]
 
     while frontier:
-        f, _, node = heapq.heappop(frontier)
+        _, _, node = heapq.heappop(frontier)
         if node in closed:
             continue
         if node == goal:

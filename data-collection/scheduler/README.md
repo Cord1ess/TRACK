@@ -1,12 +1,13 @@
-# Scheduler (Phase E, next)
+# Scheduler
 
-The daily capture system. Not built yet; the design is in `docs/project-plan.md` §5.
+The scheduled capture is the GitHub Actions workflow
+`.github/workflows/collect.yml`: every 10 minutes it captures, runs the
+pipeline, builds the site and deploys it. Runs never overlap. The run history
+under Actions is the first place to look when something is wrong.
 
-Planned `run_daily.py`:
-- loop on a fixed cadence (15 min), call `collector/capture.py --name <YYYY-MM-DD>/<HHMM>`
-- never overlap runs, skip a slot whose manifest already exists
-- free-disk guard, per-day index `captures/index.jsonl`, 07:00 Dhaka summary
-- optional push of each finished day through `storage/upload.py`
-
-`daily_check.py` is the health report from the earlier design (counts a day's
-captures on Hugging Face). It will be adapted to read local `captures/` first.
+`daily_check.py` reports on one day of the Hugging Face archive: captures
+found, their status and coverage, the longest gap between them, whether the
+collector is still uploading, and the dataset size. `.github/workflows/health.yml`
+runs it every morning and fails, which GitHub reports by email, when the day
+was below the thresholds at the top of the script. It needs `HF_TOKEN` and
+`HF_REPO`; without them both do nothing.

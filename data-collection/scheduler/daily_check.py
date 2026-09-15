@@ -1,47 +1,52 @@
-"""Daily health check against the Hugging Face repo. Fails (which makes the
-workflow email the owner) when the previous UTC day is below threshold.
+"""Health report over the Hugging Face archive for one UTC day.
 
-    python collector/daily_check.py [--day YYYY-MM-DD]
+    python scheduler/daily_check.py [--day YYYY-MM-DD]     (default: yesterday)
 
-Checks:
-  usable cycles       >= daily_min_cycles
-  partial + failed    <= daily_max_partial
-  longest run of consecutive missing slots <= daily_max_gap_slots
-  mean traffic pixel fraction >= daily_min_traffic_frac (layer still rendering)
-  collector alive     latest.json newer than 3 slots
-  dataset size        < dataset_max_gb, with a 7-day projection
-
-Env: HF_TOKEN, HF_REPO. Writes a summary to $GITHUB_STEP_SUMMARY when present.
-Exit codes: 0 healthy, 1 problems found, 3 missing env.
+Counts the captures that landed that day with their status and coverage, the
+longest gap between captures, whether the collector is still alive (age of
+latest.json) and the size of the dataset. Exit 0 when healthy, 1 when something
+is wrong, 3 without HF_TOKEN and HF_REPO. Writes a summary to
+$GITHUB_STEP_SUMMARY when present, so the health workflow shows it.
 """
 
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
+# The collection workflow triggers every 10 minutes and a capture takes about
+# 13, so a perfect day gives roughly 96 captures 15 minutes apart.
+MIN_CAPTURES = 48          # fewer usable captures than this is a problem
+MAX_BAD = 12               # partial, failed or unreadable captures allowed
+MAX_GAP_MIN = 90           # longest allowed gap between captures
+STALE_AFTER_MIN = 45       # latest.json older than this means the collector stopped
+MAX_DATASET_GB = 90.0      # the free private tier is 100 GB
+
+WHEN = re.compile(r"(\d{4}-\d{2}-\d{2})T(\d{2})(\d{2})")
 
 
-def longest_gap(missing: list[str], cadence: int) -> int:
-    """Longest run of consecutive missing HHMM slots."""
-    slots = [f"{h:02d}{m:02d}" for h in range(24) for m in range(0, 60, cadence)]
-    miss = set(missing)
-    best = cur = 0
-    for s in slots:
-        cur = cur + 1 if s in miss else 0
-        best = max(best, cur)
-    return best
+def when_of(name: str, manifest: dict | None = None) -> tuple[str | None, str | None]:
+    """(day, HH:MM) of a capture, from its manifest or else from its name."""
+    if manifest and manifest.get("captured_utc"):
+        t = datetime.strptime(manifest["captured_utc"][:16], "%Y-%m-%dT%H:%M")
+        return t.strftime("%Y-%m-%d"), t.strftime("%H:%M")
+    m = WHEN.search(name)
+    return (m.group(1), f"{m.group(2)}:{m.group(3)}") if m else (None, None)
+
+
+def longest_gap_min(times: list[str]) -> int:
+    """Longest gap in minutes between consecutive HH:MM times."""
+    mins = sorted(int(t[:2]) * 60 + int(t[3:]) for t in times)
+    return max((b - a for a, b in zip(mins, mins[1:])), default=0)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--day", help="UTC day, default yesterday")
     args = ap.parse_args()
-
-    cfg = json.loads((HERE / "config.json").read_text(encoding="utf-8"))
     token = os.environ.get("HF_TOKEN", "").strip()
     repo = os.environ.get("HF_REPO", "").strip()
     if not token or not repo:
@@ -49,114 +54,94 @@ def main() -> int:
         return 3
     now = datetime.now(timezone.utc)
     day = args.day or (now - timedelta(days=1)).strftime("%Y-%m-%d")
-    cadence = cfg["cadence_min"]
-    expected_slots = 24 * 60 // cadence
 
     from huggingface_hub import HfApi, hf_hub_download
 
     api = HfApi(token=token)
-    prefix = f"cycles/{day}"
     try:
-        entries = list(api.list_repo_tree(repo, path_in_repo=prefix, repo_type="dataset"))
+        entries = list(api.list_repo_tree(repo, path_in_repo="captures", repo_type="dataset"))
     except Exception as e:
-        print(f"[check] could not list {prefix}: {type(e).__name__}: {str(e)[:200]}")
+        print(f"[check] could not list captures/: {type(e).__name__}: {str(e)[:200]}")
         entries = []
-    slots = sorted(e.path.rsplit("/", 1)[-1] for e in entries if "." not in e.path.rsplit("/", 1)[-1])
+    names = sorted(e.path.split("/")[-1] for e in entries if "." not in e.path.split("/")[-1])
 
-    rows, counts, total_bytes = [], {"ok": 0, "partial": 0, "failed": 0, "unreadable": 0}, 0
-    cov_sum, traffic_sum, warn_total, n_content = 0.0, 0.0, 0, 0
-    for hhmm in slots:
+    rows, counts, total_bytes, cov_sum = [], {"ok": 0, "partial": 0, "failed": 0, "unreadable": 0}, 0, 0.0
+    for name in names:
+        d, _ = when_of(name)
+        if d and d != day:                       # dated names decide without a download
+            continue
         try:
-            p = hf_hub_download(repo, f"{prefix}/{hhmm}/manifest.json", repo_type="dataset",
-                                token=token)
+            p = hf_hub_download(repo, f"captures/{name}/manifest.json", repo_type="dataset", token=token)
             m = json.loads(Path(p).read_text(encoding="utf-8"))
         except Exception:
-            rows.append((hhmm, "unreadable", 0, 0, 0, ""))
+            rows.append((name, "??:??", "unreadable", 0, 0, 0, ""))
             counts["unreadable"] += 1
+            continue
+        d, hhmm = when_of(name, m)
+        if d != day:
             continue
         st = m.get("status", "failed")
         counts[st if st in counts else "failed"] += 1
-        total_bytes += m.get("bytes", 0)
+        total_bytes += m.get("bytes_tiles", 0)
         cov_sum += m.get("coverage_pct", 0)
-        tf = (m.get("audit") or {}).get("mean_traffic_frac")
-        if tf is None and m.get("chunks"):
-            ok_chunks = [c for c in m["chunks"] if c.get("file")]
-            tf = sum(c.get("traffic_frac", 0) for c in ok_chunks) / max(1, len(ok_chunks))
-        if tf is not None:
-            traffic_sum += tf
-            n_content += 1
         warns = m.get("warnings", [])
-        warn_total += len(warns)
-        rows.append((hhmm, st, m.get("coverage_pct", 0), m.get("bytes", 0) // 1024,
-                     m.get("duration_s", 0), "; ".join(w.split(":")[0] for w in warns)))
+        rows.append((name, hhmm, st, m.get("coverage_pct", 0), m.get("bytes_tiles", 0) // 1024,
+                     round(m.get("fetch_seconds", 0)), "; ".join(str(w).split(":")[0] for w in warns)))
 
     usable = counts["ok"] + counts["partial"]
-    have = set(slots)
-    missing = [f"{h:02d}{mn:02d}" for h in range(24) for mn in range(0, 60, cadence)
-               if f"{h:02d}{mn:02d}" not in have]
-    gap = longest_gap(missing, cadence)
-    mean_cov = round(cov_sum / max(1, len(slots)), 2)
-    mean_tf = round(traffic_sum / max(1, n_content), 5)
+    bad = counts["partial"] + counts["failed"] + counts["unreadable"]
+    gap = longest_gap_min([r[1] for r in rows if r[1] != "??:??"])
+    mean_cov = round(cov_sum / max(1, len(rows) - counts["unreadable"]), 2)
 
-    # ---- liveness: latest.json age
     latest_age_min, latest_txt = None, "no latest.json"
     try:
         p = hf_hub_download(repo, "latest.json", repo_type="dataset", token=token)
         latest = json.loads(Path(p).read_text(encoding="utf-8"))
         up = datetime.strptime(latest["uploaded_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
         latest_age_min = int((now - up).total_seconds() // 60)
-        latest_txt = f"{latest['slot_utc']} {latest['status']} uploaded {latest_age_min} min ago"
+        latest_txt = f"{latest.get('captured_utc')} {latest.get('status')}, uploaded {latest_age_min} min ago"
     except Exception as e:
         latest_txt = f"latest.json unreadable ({type(e).__name__})"
 
-    # ---- dataset size
     size_gb, size_txt = None, "size unknown"
     try:
         info = api.repo_info(repo, repo_type="dataset", files_metadata=True)
         size_gb = sum((s.size or 0) for s in info.siblings) / 1e9
-        days_so_far = len({s.rfilename.split("/")[1] for s in info.siblings
-                           if s.rfilename.startswith("cycles/")}) or 1
-        size_txt = f"{size_gb:.2f} GB over {days_so_far} day(s); 7-day projection {size_gb / days_so_far * 7:.1f} GB"
+        days = len({when_of(s.rfilename.split("/")[1])[0] for s in info.siblings
+                    if s.rfilename.startswith("captures/")} - {None}) or 1
+        size_txt = f"{size_gb:.2f} GB over {days} day(s); 7-day projection {size_gb / days * 7:.1f} GB"
     except Exception as e:
         size_txt = f"size unavailable ({type(e).__name__})"
 
     problems = []
-    if usable < cfg["daily_min_cycles"]:
-        problems.append(f"only {usable} usable cycles (need {cfg['daily_min_cycles']})")
-    bad = counts["partial"] + counts["failed"] + counts["unreadable"]
-    if bad > cfg["daily_max_partial"]:
-        problems.append(f"{bad} partial/failed cycles (max {cfg['daily_max_partial']})")
-    if gap > cfg["daily_max_gap_slots"]:
-        problems.append(f"{gap} consecutive slots missing (max {cfg['daily_max_gap_slots']})")
-    if n_content and mean_tf < cfg["daily_min_traffic_frac"]:
-        problems.append(f"mean traffic fraction {mean_tf} below {cfg['daily_min_traffic_frac']}: "
-                        f"is the traffic layer rendering?")
-    if latest_age_min is not None and latest_age_min > 3 * cadence:
+    if usable < MIN_CAPTURES:
+        problems.append(f"only {usable} usable captures (need {MIN_CAPTURES})")
+    if bad > MAX_BAD:
+        problems.append(f"{bad} partial, failed or unreadable captures (max {MAX_BAD})")
+    if gap > MAX_GAP_MIN:
+        problems.append(f"{gap} minutes between captures at worst (max {MAX_GAP_MIN})")
+    if latest_age_min is not None and latest_age_min > STALE_AFTER_MIN:
         problems.append(f"collector stale: last upload {latest_age_min} min ago")
-    if size_gb is not None and size_gb > cfg["dataset_max_gb"]:
-        problems.append(f"dataset {size_gb:.1f} GB exceeds {cfg['dataset_max_gb']} GB budget")
+    if size_gb is not None and size_gb > MAX_DATASET_GB:
+        problems.append(f"dataset {size_gb:.1f} GB exceeds {MAX_DATASET_GB} GB")
 
     lines = [
-        f"## TRACK daily check for {day} (UTC)", "",
+        f"## TRACK health for {day} (UTC)", "",
         f"**{'HEALTHY' if not problems else 'DEGRADED: ' + '; '.join(problems)}**", "",
         "| Metric | Value |", "|---|---|",
-        f"| Slots expected | {expected_slots} |",
-        f"| Cycles found | {len(slots)} |",
+        f"| Captures | {len(rows)} |",
         f"| ok / partial / failed / unreadable | {counts['ok']} / {counts['partial']} / {counts['failed']} / {counts['unreadable']} |",
         f"| Mean coverage | {mean_cov} % |",
-        f"| Mean traffic pixel fraction | {mean_tf} |",
-        f"| Warnings across cycles | {warn_total} |",
-        f"| Longest gap | {gap} slots |",
-        f"| Missing slots | {len(missing)}: {' '.join(missing[:24])}{' ...' if len(missing) > 24 else ''} |",
-        f"| Data this day | {total_bytes / 1e6:.1f} MB |",
+        f"| Longest gap | {gap} min |",
+        f"| Tiles this day | {total_bytes / 1e6:.1f} MB |",
         f"| Dataset | {size_txt} |",
         f"| Collector | {latest_txt} |",
         "",
     ]
-    flagged = [r for r in rows if r[1] != "ok" or r[5]]
+    flagged = [r for r in rows if r[2] != "ok" or r[6]]
     if flagged:
-        lines += ["| Slot | Status | Coverage % | KB | Seconds | Warnings |", "|---|---|---|---|---|---|"]
-        lines += [f"| {r[0]} | {r[1]} | {r[2]} | {r[3]} | {r[4]} | {r[5]} |" for r in flagged]
+        lines += ["| Capture | Time | Status | Coverage % | KB | Seconds | Warnings |", "|---|---|---|---|---|---|---|"]
+        lines += [f"| {r[0]} | {r[1]} | {r[2]} | {r[3]} | {r[4]} | {r[5]} | {r[6]} |" for r in flagged]
     text = "\n".join(lines)
     print(text)
     if os.environ.get("GITHUB_STEP_SUMMARY"):

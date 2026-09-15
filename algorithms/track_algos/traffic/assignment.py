@@ -1,40 +1,29 @@
-"""Traffic assignment: the outer loop that makes the city "thin out".
+"""Traffic assignment: route every trip on congested costs and feed the load back.
 
-Routing every trip on an empty network sends them all down the same fast
-roads and simply moves the jam (Braess's paradox territory). Assignment fixes
-that by feeding back the load:
+incremental: split the demand into batches. Route each batch with A* on the
+current BPR costs, add its volume to the edges it used, recompute the costs.
+Later batches go around the roads earlier ones filled.
 
-    incremental assignment
-        split total demand into batches (e.g. 10 x 10 %)
-        for each batch:
-            route every trip with A* on the CURRENT congested costs (BPR)
-            add the batch's volume to the edges it used
-            recompute every edge's BPR cost
-        -> later batches see the roads earlier batches filled, and go around them
+msa: assign all demand on the current costs, then blend the volumes,
+v = (1 - 1/k) v_prev + (1/k) v_new at iteration k. Converges toward user
+equilibrium, where no trip can lower its own time by changing route.
 
-    method of successive averages (MSA)
-        repeat: assign ALL demand on current costs (all-or-nothing), then blend
-        volumes  v = (1 - 1/k) * v_prev + (1/k) * v_aon  at iteration k
-        -> converges toward Wardrop user equilibrium, where no trip can lower its
-           own time by switching route
-
-Both call `astar` once per trip, so a run really is thousands of A* searches on
-shifting costs. Every iteration is recorded as a frame (edge -> volume, v/c) so
-the visualizer can animate the network going from red to balanced.
+Every iteration is recorded as a frame (edge -> volume, v/c) for the visualizer.
 """
 
 from collections import Counter
 
+from ..decode.palette import COLORS_HEX
 from ..graph.road_graph import RoadGraph
 from ..search.astar import astar, haversine_heuristic
-from .bpr import bpr_time
+from .bpr import ALPHA, BETA, bpr_time
 
 
 class Assignment:
-    def __init__(self, graph: RoadGraph, alpha: float = 0.15, beta: float = 4.0,
+    def __init__(self, graph: RoadGraph, alpha: float = ALPHA, beta: float = BETA,
                  base_volume: dict | None = None):
-        """base_volume: edge_id -> pre-existing volume (e.g. from decoded traffic,
-        vc_ratio * capacity), so new trips are assigned on top of today's load."""
+        """base_volume: edge_id -> volume already on the road, so new trips
+        are assigned on top of today's traffic."""
         self.g = graph
         self.alpha, self.beta = alpha, beta
         self.base = dict(base_volume or {})
@@ -43,7 +32,6 @@ class Assignment:
         self.frames: list[dict] = []
         self.searches = 0
 
-    # ---- costs
     def cost(self, edge) -> float:
         return bpr_time(edge.free_flow_s, self.volume.get(edge.id, 0.0), edge.capacity_vph,
                         self.alpha, self.beta)
@@ -51,6 +39,10 @@ class Assignment:
     def vc(self, eid: int) -> float:
         e = self.g.edges[eid]
         return self.volume.get(eid, 0.0) / e.capacity_vph if e.capacity_vph else float("inf")
+
+    def total_travel_time(self) -> float:
+        """Sum over edges of volume times congested time."""
+        return sum(self.volume.get(eid, 0.0) * self.cost(e) for eid, e in self.g.edges.items())
 
     def snapshot(self, label: str) -> dict:
         vcs = {eid: round(self.vc(eid), 3) for eid in self.g.edges}
@@ -64,35 +56,32 @@ class Assignment:
         self.frames.append(frame)
         return frame
 
-    def total_travel_time(self) -> float:
-        """Sum over edges of volume x congested time: the system-wide cost."""
-        return sum(self.volume.get(eid, 0.0) * self.cost(e) for eid, e in self.g.edges.items())
-
-    # ---- all-or-nothing on current costs
     def _assign_batch(self, trips: list[tuple], vehicles_per_trip: float) -> Counter:
+        """Route every trip on the current costs; return the load per edge."""
         load = Counter()
         for o, d in trips:
             _, edges, _ = astar(self.g, o, d, self.cost, self.heuristic)
             self.searches += 1
-            if edges:
-                for eid in edges:
-                    load[eid] += vehicles_per_trip
+            for eid in edges or ():
+                load[eid] += vehicles_per_trip
         return load
 
-    # ---- incremental assignment
+    def all_at_once(self, trips: list[tuple], vehicles_per_trip: float = 1.0) -> dict:
+        """Every trip on the current costs with no feedback: the naive baseline."""
+        for eid, v in self._assign_batch(trips, vehicles_per_trip).items():
+            self.volume[eid] = self.volume.get(eid, 0.0) + v
+        return self.snapshot("all at once")
+
     def incremental(self, trips: list[tuple], batches: int = 10, vehicles_per_trip: float = 1.0) -> list[dict]:
-        """trips: [(origin_node, dest_node)]. Returns the frames (one per batch)."""
+        """trips: [(origin_node, dest_node)]. Returns one frame per batch."""
         self.snapshot("before")
-        n = len(trips)
-        size = max(1, -(-n // batches))
-        for i in range(0, n, size):
-            load = self._assign_batch(trips[i:i + size], vehicles_per_trip)
-            for eid, v in load.items():
+        size = max(1, -(-len(trips) // batches))
+        for i in range(0, len(trips), size):
+            for eid, v in self._assign_batch(trips[i:i + size], vehicles_per_trip).items():
                 self.volume[eid] = self.volume.get(eid, 0.0) + v
             self.snapshot(f"batch {i // size + 1}")
         return self.frames
 
-    # ---- MSA toward user equilibrium
     def msa(self, trips: list[tuple], iterations: int = 8, vehicles_per_trip: float = 1.0) -> list[dict]:
         self.snapshot("before")
         for k in range(1, iterations + 1):
@@ -106,9 +95,8 @@ class Assignment:
             self.snapshot(f"msa {k}")
         return self.frames
 
-    # ---- export for the visualizer
     def frame_geojson(self, frame: dict) -> dict:
-        from ..decode.palette import COLORS_HEX
+        """One frame as a styled FeatureCollection."""
         props = {}
         for eid, vc in frame["vc"].items():
             eid = int(eid)

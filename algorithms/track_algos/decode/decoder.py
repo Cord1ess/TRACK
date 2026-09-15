@@ -1,32 +1,17 @@
-"""Turn a capture of Google traffic tiles into a traffic weight per graph edge.
+"""Read a capture of Google traffic tiles into a traffic weight per graph edge.
 
     python -m track_algos.decode.decoder --capture <dir> --graph output/graph/dhaka.json
-        --out output/traffic/observed.csv [--geojson] [--step-m 5] [--offset-px 4]
+        --out output/traffic/observed.csv [--geojson]
 
-How it works
-------------
-For every edge, walk along its geometry taking a sample every `step_m` metres.
-Step sideways from each sample to find the pixel Google actually painted, read
-a small window of pixels there, and classify them against the measured palette.
-The edge's weight is the mean weight of its coloured samples; its coverage is
-the fraction of samples that had any colour at all.
+Every edge is sampled every step_m metres. Each sample steps sideways to the
+left of travel (Bangladesh drives on the left, and Google draws each
+direction's line on that side), reads a small window of pixels there and
+classifies them. An edge's weight is the mean weight of its coloured samples;
+its coverage is the share of samples that had any colour. Below min_coverage
+the edge is reported as source=none, for impute.py to fill.
 
-The sideways step is to the LEFT of travel. Bangladesh drives on the left, and
-Google draws each direction's traffic line on the side of the road that
-direction uses, so a two-way street shows two lines and each directed edge must
-read its own. Get the side wrong and every edge reads its opposite direction's
-traffic.
-
-Coverage is the honesty column. Google paints nothing on most residential
-streets, and it leaves gaps at junctions even on roads it does cover. An edge
-below `--min-coverage` is reported as `source=none`: we did not observe it, and
-impute.py will predict it rather than pretend it was free.
-
-Scale
------
-76 k edges at a 5 m step is about 1.5 M sample points, so the work is done on
-whole arrays: every sample point is projected at once, grouped by the tile it
-falls in, and each tile is opened exactly once.
+All sample points are projected at once and grouped by tile, so each tile is
+opened exactly once.
 """
 
 import argparse
@@ -50,7 +35,7 @@ CSV_COLUMNS = ["slot_utc", "edge_id", "cls", "weight", "f_green", "f_orange", "f
 
 
 def read_meta(csv_path) -> dict:
-    """The sidecar written beside a weight table: which graph its ids belong to."""
+    """The .meta.json beside a weight table: which graph its edge ids belong to."""
     p = Path(str(csv_path) + ".meta.json")
     try:
         return json.loads(p.read_text(encoding="utf-8"))
@@ -59,7 +44,7 @@ def read_meta(csv_path) -> dict:
 
 
 class TileStore:
-    """The tiles of one capture, opened on demand and kept as arrays."""
+    """The tiles of one capture, opened on demand."""
 
     def __init__(self, capture_dir: Path):
         self.dir = Path(capture_dir)
@@ -78,23 +63,19 @@ class TileStore:
         """(tile_px, tile_px, 4) uint8, or None when the tile is not in the capture."""
         if (tx, ty) not in self.available:
             return None
-        p = self.dir / "tiles" / f"z{self.zoom}_{tx}_{ty}.png"
         try:
-            return np.asarray(Image.open(p).convert("RGBA"))
+            return np.asarray(Image.open(self.dir / "tiles" / f"z{self.zoom}_{tx}_{ty}.png").convert("RGBA"))
         except Exception:
             return None
 
 
 def sample_points(graph: RoadGraph, step_m: float, trim_m: float = 10.0):
-    """For every edge, points every step_m along it with the travel direction.
+    """Points every step_m along every edge, with the travel direction.
 
-    `trim_m` is skipped at each end. Where two roads meet, the bigger road's
-    traffic line passes within a few metres of the smaller road's first sample,
-    so without trimming every side street inherits the arterial's colour for its
-    first stretch and a quiet lane reads as a jam. On an edge too short to trim
-    that much, the middle 40 % is sampled instead, so no edge is ever skipped.
-
-    Returns flat arrays (edge_index, lon, lat, dlon, dlat) plus the edge ids."""
+    trim_m is skipped at each end so a side street's first samples do not
+    read the bigger road it joins; an edge too short for that keeps its
+    middle 40 %. Returns (edge_index, lon, lat, dlon, dlat, edge_ids).
+    """
     ids, eidx, lons, lats, dlons, dlats = [], [], [], [], [], []
     for i, e in enumerate(graph.edges.values()):
         ids.append(e.id)
@@ -105,7 +86,7 @@ def sample_points(graph: RoadGraph, step_m: float, trim_m: float = 10.0):
         seglen = haversine_m_np(g[:-1, 0], g[:-1, 1], g[1:, 0], g[1:, 1])
         cum = np.concatenate([[0.0], np.cumsum(seglen)])
         total = float(cum[-1])
-        lo = min(trim_m, 0.3 * total)               # short edges: keep the middle 40 %
+        lo = min(trim_m, 0.3 * total)
         span = max(total - 2.0 * lo, 0.0)
         n = max(2, int(span // step_m) + 1)
         s = np.linspace(lo, total - lo, n)
@@ -122,14 +103,12 @@ def sample_points(graph: RoadGraph, step_m: float, trim_m: float = 10.0):
 
 def classify_samples(store: TileStore, lon, lat, dlon, dlat, offset_px: float, win: int,
                      log=print) -> np.ndarray:
-    """Class id (0..4) for every sample point, read from the capture's tiles."""
+    """Class id (0..4) for every sample point, read from the tiles."""
     px, py = lonlat_to_pixel_np(lon, lat, store.zoom, store.tile_px)
-    # travel direction in pixel space (y grows downward, so north is -y)
-    vx, vy = dlon, -dlat
+    vx, vy = dlon, -dlat                      # travel direction on screen (y grows downward)
     norm = np.hypot(vx, vy)
     norm[norm == 0.0] = 1.0
-    # left of travel on screen = rotate the direction by +90 degrees
-    sx = px + (vy / norm) * offset_px
+    sx = px + (vy / norm) * offset_px         # rotate +90 degrees: left of travel
     sy = py - (vx / norm) * offset_px
 
     tp = store.tile_px
@@ -139,7 +118,7 @@ def classify_samples(store: TileStore, lon, lat, dlon, dlat, offset_px: float, w
     iy = (np.floor(sy).astype(np.int64) - ty * tp).astype(np.int32)
 
     cls = np.zeros(sx.size, dtype=np.int8)
-    key = tx * (1 << 22) + ty
+    key = tx * (1 << 22) + ty                 # group the samples by tile
     order = np.argsort(key, kind="stable")
     bounds = np.flatnonzero(np.concatenate([[True], key[order][1:] != key[order][:-1], [True]]))
     offsets = [(dx, dy) for dy in range(-win, win + 1) for dx in range(-win, win + 1)]
@@ -167,7 +146,7 @@ def classify_samples(store: TileStore, lon, lat, dlon, dlat, offset_px: float, w
 def decode_capture(capture_dir, graph: RoadGraph, offset_px: float = 4.0, step_m: float = 5.0,
                    win: int = 1, min_coverage: float = 0.25, trim_m: float = 10.0,
                    log=print) -> list[dict]:
-    """One row per edge: its weight, coverage and colour mix."""
+    """One row per edge: weight, coverage and colour mix."""
     store = TileStore(capture_dir)
     log(f"  capture z{store.zoom}, {len(store.available)} tiles, slot {store.slot_utc}")
     eidx, lon, lat, dlon, dlat, ids = sample_points(graph, step_m, trim_m)
@@ -201,13 +180,13 @@ def decode_capture(capture_dir, graph: RoadGraph, offset_px: float = 4.0, step_m
 
 
 def write_csv(rows: list[dict], path, meta: dict | None = None) -> None:
-    """Write the table, and beside it a small `.meta.json` recording which graph
-    the edge ids belong to. Anything reading the table can then refuse to pair
-    it with a different graph."""
+    """Write the table and, when meta is given, a .meta.json beside it.
+    Columns beyond CSV_COLUMNS in the rows (impute adds `method`) are kept."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    extra = [k for k in (rows[0] if rows else {}) if k not in CSV_COLUMNS]
     with path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=CSV_COLUMNS, extrasaction="ignore")
+        w = csv.DictWriter(f, fieldnames=CSV_COLUMNS + extra, extrasaction="ignore")
         w.writeheader()
         w.writerows(rows)
     if meta is not None:
@@ -228,9 +207,7 @@ def read_csv(path) -> list[dict]:
 
 
 def write_geojson(rows: list[dict], graph: RoadGraph, path, only_source: str | None = None) -> int:
-    """Edges as a styled FeatureCollection for the visualizer. `only_source`
-    keeps just the rows with that source, so observed and predicted data can be
-    toggled as separate layers and compared."""
+    """Edges as a styled FeatureCollection, optionally only rows of one source."""
     keep = [r for r in rows if only_source is None or r["source"] == only_source]
     colours = to_hex_array([r["weight"] for r in keep]) if keep else []
     props = {}
@@ -257,8 +234,7 @@ def main() -> int:
     ap.add_argument("--step-m", type=float, default=5.0)
     ap.add_argument("--win", type=int, default=1)
     ap.add_argument("--min-coverage", type=float, default=0.25)
-    ap.add_argument("--trim-m", type=float, default=10.0,
-                    help="skip this much at each end of an edge (junction bleed guard)")
+    ap.add_argument("--trim-m", type=float, default=10.0, help="skip this much at each end of an edge")
     ap.add_argument("--geojson", action="store_true")
     args = ap.parse_args()
 

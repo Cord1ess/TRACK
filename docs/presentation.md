@@ -1,138 +1,81 @@
-# TRACK — Presentation Talking Points
+# TRACK: talking points
 
----
+## 1. Title
 
-## Slide 1 — Title
+TRACK. Traffic Route optimization using A* search, Clustering and KNN.
+A data-driven approach to congestion-aware traffic optimization in Dhaka.
 
-**TRACK**
-Traffic Route optimization using A\* search, Clustering, and KNN
+## 2. The problem
 
-*A data-driven approach to congestion-aware traffic optimization in Dhaka City*
+- Dhaka traffic is unbalanced: some roads jammed, roads next to them empty.
+- There is no public traffic dataset for Bangladesh. Google shows traffic but gives no data.
+- Sending everyone to the best road moves the jam instead of removing it.
 
----
+## 3. The idea
 
-## Slide 2 — The Problem
+- Read the traffic Google shows, for the whole city, every few minutes.
+- Give every road a number, including the roads Google never paints.
+- Route trips in batches so each batch avoids what the last one filled. The city thins out instead of moving the jam.
 
-- Dhaka traffic is severely unbalanced: some roads jammed (red), nearby roads empty (green)
-- No public real-time traffic data infrastructure in Bangladesh
-- Google shows traffic but gives no downloadable dataset
-- Rerouting everyone to the "best" road just moves the jam elsewhere
+## 4. The data, live
 
----
+- Google's tile server returns the traffic layer as a transparent tile with no API key. 4,928 tiles cover the metro area in 13 minutes.
+- A GitHub Actions workflow captures every 10 minutes, runs the pipeline and publishes the map. The page updates itself without a reload.
+- Every capture is archived. Show the site.
 
-## Slide 3 — The Idea
+## 5. From pixels to a city model
 
-- Learn from historical data: **where** and **when** congestion happens
-- Divert traffic from jammed roads to free roads
-- Spread it out → smooth, flowing traffic everywhere
-- Optimize the **whole city at once**, not one driver
+1. Road graph from OpenStreetMap: 48,413 junctions, 110,382 directed edges, 8,302 km, no edge longer than 150 m.
+2. Decoder: each edge is sampled along its length and read from the tiles on the left of travel, the side Bangladesh drives on. Weight: green 25, yellow 55, red 85, dark red 105.
+3. Imputation: Google paints about a tenth of the network. Every other road is predicted from its nearest observed roads with KNN, one level quieter when it is a smaller road, faded to a K-means zone average far from any data.
+4. Every road now has a cost, so a router can leave a jammed arterial for the side streets.
 
----
+## 6. The algorithms, each on the map
 
-## Slide 4 — Before vs. After (visual slide)
+- Decoder: which roads were read, and how much of each.
+- Imputation: how each road got its weight.
+- K-means: the zones.
+- KNN: a fifth of the observed roads hidden and predicted; error 6 points on a scale of 80, right level 85 % of the time.
+- Logistic regression: the traffic level of every road from position, class and neighbours; 91 % hold-out accuracy, the same as KNN on the same features.
+- Dijkstra: minutes from Shahbagh to every road, one run.
+- A*: six routes across the city on an empty network and on today's traffic.
+- Gravity model: trips between 36 zones, busier zones make and attract more.
+- Assignment: 300 new trips. All at once, 617 roads over capacity. In ten batches with feedback, 496. Before the trips, 263.
 
-- Before: dark red jams + empty green roads
-- After: balanced, mostly-yellow, flowing network
-- *(Show two map images side by side)*
+## 7. Why the costs matter
 
----
+- The BPR function turns volume over capacity into travel time. The textbook setting makes the four traffic levels differ by under 20 %, and a router then ignores traffic.
+- TRACK sets it so a dark red road runs at a quarter of its free-flow speed. Green 1.01 times free flow, yellow 1.23, red 2.29, dark red 4.
+- Each batch of trips is routed with A* on the current costs, then the costs are recomputed. Later batches go around what earlier ones filled.
 
-## Slide 5 — How It Works (pipeline)
+## 8. Checked, not assumed
 
-1. Build Dhaka road network as a graph (OpenStreetMap)
-2. **K-means** → find recurring traffic patterns (rush hour, weekend, off-peak)
-3. **KNN / Logistic regression** → predict congestion per road, per time
-4. Convert map colors → estimated traffic volume
-5. **A\*** routes thousands of trips, costs update after each batch
-6. Traffic spreads out → visualized live
+- Which side of the road a direction's line is drawn on: measured. Left observes 72 % of major-road edges, right 47 %.
+- The assumption that a smaller road is quieter than the busy road beside it: measured on observed pairs. 15 points lower on average, lower in 62 % of pairs.
+- The imputation: hold-out on observed edges, four models compared.
+- The map itself: a browser suite of 22 scenarios checks every 60 ms that no road layer disappears.
 
----
+## 9. What is built
 
-## Slide 6 — What Each Algorithm Does
+- Collection, graph, decoder, imputation, all algorithms with tests, one map layer each, the map with live weight tuning, the workflow and the site.
 
-- **K-means** — groups historical data into traffic scenarios
-- **KNN / Logistic regression** — predicts how congested each road will be
-- **A\*** — finds the best route under current traffic costs
-- **Assignment loop** — calls A\* repeatedly, raising costs on filling roads → spreading effect
+## 10. What is next
 
----
+- Scenarios over time: the workflow now produces a capture every 15 minutes; K-means over days of captures gives rush hour, off-peak and weekend patterns, and KNN against logistic regression per time of day.
+- The animated assignment run, and personal A-to-B routing on predicted costs.
+- Signal timing as a constraint problem, optional.
 
-## Slide 7 — The Key Trick: Spreading
+## 11. Who would use it
 
-- Colors → volume estimates (Green ~30% capacity … Red ~100% … Dark red 120%+)
-- BPR cost formula: road cost rises **sharply** near capacity
-- Route demand in small batches; each batch avoids roads the last batch filled
-- Result: stable, balanced traffic (Wardrop's user equilibrium)
+- Traffic police: advisories with times. Corridor X saturates at 5 pm, start diverting at 4:30.
+- Fleets and ride sharing: many vehicles under central control can follow assigned routes.
+- Planners: test a one-way scheme or a link road in the model before building it.
 
----
+## 12. Questions to expect
 
-## Slide 8 — Feature 1: Citywide Traffic Diversion (core)
-
-Optimizes the entire city at once — no user input needed. The system takes a snapshot of current Dhaka congestion, generates thousands of synthetic trips based on where activity is concentrated, and routes them through the network so that traffic naturally spreads from jammed roads onto free ones. The result is shown as a live visualizer: the city thinning out from red to yellow to green in real time, with a before/after comparison.
-
----
-
-## Slide 9 — Feature 2: Personal Future-Aware Routing (secondary)
-
-The user picks any two points on the map, and the system returns a route that avoids where traffic **will** be — not just where it is now. Predicted congestion for the travel time window is used as the road cost, so the route dodges jams before they form. Same engine as Feature 1, applied at personal scale instead of citywide.
-
----
-
-## Slide 10 — Feature 3: Signal Timing Optimization (stretch goal)
-
-Optimizes the intersections themselves, not the routes through them. Signal timing is modeled as a CSP: predicted traffic per approach decides the green-time splits, under the hard rule that conflicting directions are never green together — producing one optimal signal plan per traffic scenario (rush hour, off-peak, weekend). A third consumer of the same prediction engine, and fully optional: the core pipeline works without it.
-
----
-
-## Slide 11 — Data Plan
-
-- **Road network:** OpenStreetMap (free, detailed)
-- **Historical congestion:** existing Dhaka research datasets (2 published papers; replicable method as fallback)
-- **Fresh data:** our own Google Directions API polling on major corridors, 1–2 weeks
-- Fresh data validates historical data
-
----
-
-## Slide 12 — Syllabus Fit
-
-- A\* search — Class 4
-- CSP (signal timing, stretch goal) — Class 5
-- K-means & KNN — Class 8
-- Logistic regression — Class 10
-- Plus standard, citable traffic-engineering methods (BPR, traffic assignment)
-
----
-
-## Slide 13 — Deliverables
-
-- Congestion prediction models (KNN vs. logistic regression, compared)
-- Network-level traffic diversion engine (A\* + assignment loop)
-- Live before/after visualization demo
-- Stretch goal: CSP-based signal timing at key intersections
-
----
-
-## Slide 14 — Real-World Applications
-
-*The system is a prediction + decision-support tool — here's who uses it:*
-
-- **Traffic police (DMP)** — most intersections are police-run, and police can divert traffic in ways lights can't. Our predictions become advisories: *"Corridor X saturates at 5pm — start diverting to Y at 4:30"* — data-driven timing instead of gut feel
-- **Fleets & ride-sharing (Pathao, Uber, delivery, buses)** — fleets control many vehicles centrally, so they can actually follow assigned congestion-aware routes. Most direct user of Feature 2
-- **Urban planners (DTCA)** — test interventions in simulation before spending on concrete: one-way schemes, new link roads, U-loops — "what happens to the network if we build this?"
-- **Signalization planning (CSP)** — identify which intersections have regular enough flow to justify installing signals, with pre-computed timing plans per traffic scenario
-
----
-
-## Slide 15 — Conclusion
-
-> "Dhaka doesn't need new roads to move better — it needs smarter use of the roads it already has. TRACK shows that even in a data-scarce city, classical AI can deliver that intelligence today."
-
----
-
-## Speaker Notes — Tough Questions
-
-- **"Where's the data from?"** → 3 sources: OSM + published datasets + our own API collection
-- **"Won't rerouting create new jams?"** → Yes if naive — that's why we use batch assignment with cost feedback
-- **"How do you simulate demand without vehicle data?"** → Zone-based synthetic trips weighted by congestion (gravity model, citable)
-- **"Why A\* not Dijkstra?"** → We route point-to-point; A\*'s heuristic skips wasted search. Dijkstra is for one-to-all
-- **"Does every car avoid jams?"** → Don't overclaim: traffic becomes *balanced*, not eliminated
+- Where is the data from? Google's traffic layer, read every 10 minutes; OpenStreetMap for the roads.
+- Is that allowed? Google's terms forbid storing their tiles. The owner accepted the risk for academic use.
+- Won't rerouting create new jams? Yes if everyone is routed at once. Batches with cost feedback are the fix, and the numbers show it: 617 against 496.
+- How do you get trips without vehicle data? A gravity model between zones, weighted by observed traffic.
+- Why A* and not Dijkstra? Trips are point to point; A* searches toward the destination. Dijkstra is for one to everything, and the map has that too.
+- Does every car avoid jams? No. Traffic becomes balanced, not gone.

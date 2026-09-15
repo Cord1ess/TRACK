@@ -1,7 +1,6 @@
-"""Geographic helpers shared by every algorithm.
+"""Web Mercator tile maths and distances, shared by every algorithm.
 
-Web Mercator tile/pixel math (mirrors data-collection/collector/grid.py so
-both sides agree exactly on where a pixel is) plus haversine distance.
+Mirrors data-collection/collector/grid.py so both sides agree on where a pixel is.
 """
 
 import math
@@ -29,7 +28,7 @@ def ty_to_lat(ty: float, z: int) -> float:
 
 
 def lonlat_to_pixel(lon: float, lat: float, z: int, tile_px: int = 256) -> tuple[float, float]:
-    """Global pixel coordinates at zoom z (x right, y down)."""
+    """Global pixel position at zoom z (x right, y down)."""
     return lon_to_tx(lon, z) * tile_px, lat_to_ty(lat, z) * tile_px
 
 
@@ -42,8 +41,7 @@ def metres_per_pixel(lat: float, z: int) -> float:
 
 
 def haversine_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
-    """Great-circle distance in metres. Used as the A* heuristic: it never
-    overestimates the road distance, so A* stays optimal (admissible)."""
+    """Great-circle distance in metres."""
     p1, p2 = math.radians(lat1), math.radians(lat2)
     dp, dl = p2 - p1, math.radians(lon2 - lon1)
     a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
@@ -54,13 +52,9 @@ def polyline_length_m(coords: list) -> float:
     return sum(haversine_m(*coords[i], *coords[i + 1]) for i in range(len(coords) - 1))
 
 
-# ---------------------------------------------------------------- array forms
-# The decoder samples millions of points along the graph, so it needs the same
-# maths on whole arrays. These must agree with the scalar versions above (and
-# so with data-collection/collector/grid.py) to the last pixel.
+# Array versions of the same maths, for the decoder's millions of sample points.
 
 def lonlat_to_pixel_np(lon, lat, z: int, tile_px: int = 256):
-    """Vectorised lonlat_to_pixel. Returns (px, py) float arrays."""
     lon = np.asarray(lon, dtype=float)
     r = np.radians(np.asarray(lat, dtype=float))
     tx = (lon + 180.0) / 360.0 * (1 << z)
@@ -69,7 +63,6 @@ def lonlat_to_pixel_np(lon, lat, z: int, tile_px: int = 256):
 
 
 def haversine_m_np(lon1, lat1, lon2, lat2):
-    """Vectorised haversine_m, metres."""
     p1, p2 = np.radians(np.asarray(lat1, dtype=float)), np.radians(np.asarray(lat2, dtype=float))
     dp = p2 - p1
     dl = np.radians(np.asarray(lon2, dtype=float) - np.asarray(lon1, dtype=float))
@@ -78,12 +71,7 @@ def haversine_m_np(lon1, lat1, lon2, lat2):
 
 
 def local_xy(lon, lat, lon0: float, lat0: float):
-    """Project lon/lat to metres east/north of a local origin (equirectangular).
-
-    Over a city the error against true geodesic distance is well under a
-    percent, and it turns "nearest road" into plain Euclidean distance on a
-    flat plane, which is what makes the neighbour search a single numpy
-    operation instead of a loop of haversines."""
+    """Metres east and north of (lon0, lat0). Accurate enough across one city."""
     lon = np.asarray(lon, dtype=float)
     lat = np.asarray(lat, dtype=float)
     k = math.cos(math.radians(lat0))

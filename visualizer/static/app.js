@@ -49,6 +49,36 @@ const T = {
   watchdog: 1000,     // self-repair interval
   infoPoll: 5000,     // how often to look for new data on the server
 };
+
+/* ═════════════════════════ where the data comes from ═════════════════════════
+   Locally the dev server answers /api/... live. On GitHub Pages there is no
+   server: build_site.py writes the same answers into data/manifest.json and
+   marks the page with <meta name="track-static">, and the app reads that file
+   instead, re-reading it for the model and graph so a new version is noticed. */
+const STATIC = !!document.querySelector('meta[name="track-static"]');
+const SITE = location.origin + location.pathname.replace(/[^/]*$/, "");
+let manifest = null;
+async function loadManifest() {
+  try {
+    const r = await fetch(`${SITE}data/manifest.json?t=${Date.now()}`, { cache: "no-store" });
+    if (r.ok) manifest = await r.json();
+  } catch { /* keep the last one */ }
+  return manifest;
+}
+async function apiJson(path) {
+  if (!STATIC) {
+    const r = await fetch(path, { cache: "no-store" });
+    if (!r.ok) throw new Error(`server answered ${r.status}`);
+    return await r.json();
+  }
+  const live = path === "/api/model" || path === "/api/graph";
+  const m = live ? (await loadManifest()) : (manifest || await loadManifest());
+  if (!m) throw new Error("data unreachable");
+  const answers = { "/api/config": { min_zoom: m.min_zoom }, "/api/captures": m.captures,
+                    "/api/model": m.model, "/api/graph": m.graph, "/api/layers": m.layers };
+  if (!(path in answers)) throw new Error(`no static answer for ${path}`);
+  return answers[path];
+}
 const MINOR_FADE = [9.6, 10.6];      // zoom range the side streets fade in over
 const NODE_FADE = [11.6, 13.0];      // junctions fade in over this zoom range
 const LINK_FADE = [10.4, 11.6];      // graph edges fade in over this zoom range
@@ -249,10 +279,12 @@ const minzoomFor = (part) => (part === "minor" && state.lodMinor ? MINOR_FADE[0]
 const WORLD = { type: "Feature", geometry: { type: "Polygon",
   coordinates: [[[-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85]]] } };
 
-const trafficUrl = (c) =>
-  `${location.origin}/tiles/${encodeURIComponent(c.name)}/{z}/{x}/{y}.png${state.traffic.pure ? "?clean=1" : ""}`;
-const modelUrl = (part) =>
-  `${location.origin}/model.geojson?part=${part}&v=${encodeURIComponent(state.model.version || "0")}`;
+const trafficUrl = (c) => STATIC
+  ? `${SITE}tiles${state.traffic.pure ? "-clean" : ""}/${encodeURIComponent(c.name)}/{z}/{x}/{y}.png`
+  : `${location.origin}/tiles/${encodeURIComponent(c.name)}/{z}/{x}/{y}.png${state.traffic.pure ? "?clean=1" : ""}`;
+const modelUrl = (part) => STATIC
+  ? `${SITE}data/model-${part}.${encodeURIComponent(state.model.version || "0")}.json`
+  : `${location.origin}/model.geojson?part=${part}&v=${encodeURIComponent(state.model.version || "0")}`;
 
 let ensuring = false;
 /* Add whatever should exist and does not. Idempotent, safe to call any time. */
@@ -294,8 +326,11 @@ function addTraffic() {
   const c = state.capture;
   let added = false;
   if (!hasSource("traffic")) {
+    // bounds keep requests inside the capture: the dev server answers a
+    // transparent tile outside it, a static site has nothing to answer with
+    const b = c.bbox ? { bounds: [c.bbox.west, c.bbox.south, c.bbox.east, c.bbox.north] } : {};
     map.addSource("traffic", { type: "raster", tileSize: 256, minzoom: state.minZoom,
-      maxzoom: c.zoom || 17, tiles: [trafficUrl(c)] });
+      maxzoom: c.zoom || 17, tiles: [trafficUrl(c)], ...b });
     added = true;
   }
   if (!hasLayer("traffic")) {
@@ -316,12 +351,15 @@ function syncTrafficTiles() {
   const src = attempt("getSource traffic", () => map.getSource("traffic"));
   if (!src) { ensureLayers(); return; }
   const url = trafficUrl(state.capture);
-  if (src.maxzoom === (state.capture.zoom || 17) && typeof src.setTiles === "function") {
+  const b = state.capture.bbox;
+  const sameBox = !b || !src.bounds || (Math.abs(src.bounds[0] - b.west) < 1e-9 && Math.abs(src.bounds[1] - b.south) < 1e-9
+    && Math.abs(src.bounds[2] - b.east) < 1e-9 && Math.abs(src.bounds[3] - b.north) < 1e-9);
+  if (src.maxzoom === (state.capture.zoom || 17) && sameBox && typeof src.setTiles === "function") {
     const current = Array.isArray(src.tiles) ? src.tiles[0] : null;
     if (current !== url) attempt("setTiles", () => src.setTiles([url]));
     return;
   }
-  // a capture at a different native zoom needs a new source
+  // a capture at a different native zoom or a different area needs a new source
   attempt("rebuild traffic", () => {
     if (map.getLayer("traffic")) map.removeLayer("traffic");
     if (map.getSource("traffic")) map.removeSource("traffic");
@@ -356,8 +394,9 @@ function addModelPart(part) {
 /* ═════════════════════════ road graph ═════════════════════════
    The network A* actually walks: junctions, and one line per directed edge. */
 
-const graphUrl = (part) =>
-  `${location.origin}/graph.geojson?part=${part}&v=${encodeURIComponent(state.graph.version || "0")}`;
+const graphUrl = (part) => STATIC
+  ? `${SITE}data/graph-${part}.${encodeURIComponent(state.graph.version || "0")}.json`
+  : `${location.origin}/graph.geojson?part=${part}&v=${encodeURIComponent(state.graph.version || "0")}`;
 const pal = () => PALETTES[state.graph.palette] || PALETTES.vivid;
 
 /* A pulse travelling along each segment in its direction of travel.
@@ -548,11 +587,9 @@ document.addEventListener("visibilitychange", syncBreathing);
 
 async function fetchGraphInfo() {
   try {
-    const r = await fetch("/api/graph", { cache: "no-store" });
-    if (!r.ok) return { ready: false, error: `server answered ${r.status}` };
-    return await r.json();
-  } catch {
-    return { ready: false, error: "server unreachable" };
+    return await apiJson("/api/graph");
+  } catch (e) {
+    return { ready: false, error: /^(server answered|data unreachable)/.test(e.message) ? e.message : "server unreachable" };
   }
 }
 function applyGraphInfo(g) {
@@ -880,7 +917,7 @@ function removeGeoJsonLayer(id) {
   });
 }
 async function loadLayerList() {
-  try { state.layers = await (await fetch("/api/layers")).json(); } catch { state.layers = []; }
+  try { state.layers = await apiJson("/api/layers"); } catch { state.layers = []; }
   const box = $("layers");
   if (!Array.isArray(state.layers) || !state.layers.length) {
     state.layers = [];
@@ -890,13 +927,19 @@ async function loadLayerList() {
   box.innerHTML = "";
   for (const l of state.layers) {
     const row = document.createElement("div");
-    row.className = "row";
-    row.innerHTML = `<span>${escapeHtml(l.name || l.id)}</span>
-      <label class="switch sm"><input type="checkbox"><span></span></label>`;
+    row.className = "algo";
+    const legend = (l.legend || []).map((s) =>
+      `<i style="background:${escapeHtml(s.color)}"></i>${escapeHtml(s.label)}`).join("");
+    row.innerHTML = `<div class="row"><span>${escapeHtml(l.name || l.id)}</span>
+        <label class="switch sm"><input type="checkbox" id="layer-${escapeHtml(l.id)}"><span></span></label></div>
+      ${l.description ? `<p class="hint">${escapeHtml(l.description)}</p>` : ""}
+      ${legend ? `<div class="lg">${legend}</div>` : ""}
+      ${l.summary ? `<p class="hint stat">${escapeHtml(l.summary)}</p>` : ""}`;
     const cb = row.querySelector("input");
     cb.onchange = async () => {
       if (cb.checked) {
         state.activeLayers.add(l.id);
+        row.classList.add("loading");
         if (!state.layerData[l.id]) {
           try {
             state.layerData[l.id] = await (await fetch(l.url)).json();
@@ -904,12 +947,26 @@ async function loadLayerList() {
             warn(`layer ${l.id}`, err);
             state.activeLayers.delete(l.id);
             cb.checked = false;
+            row.classList.remove("loading");
             return;
           }
         }
         ensureLayers();
+        // a big layer is tiled in a worker after it is added; keep the row
+        // marked until its first tiles are ready
+        const ids = geoIds(l.id), t0 = performance.now();
+        const drawn = () => [ids.line, ids.pt, ids.fill].some((k) =>
+          hasLayer(k) && attempt(`query ${k}`, () => map.queryRenderedFeatures({ layers: [k] }).length > 0));
+        const tick = () => {
+          if (!row.classList.contains("loading")) return;
+          const done = !state.activeLayers.has(l.id) || drawn()
+                       || (hasSource(ids.src) && map.isSourceLoaded(ids.src)) || performance.now() - t0 > 20000;
+          if (done) row.classList.remove("loading"); else setTimeout(tick, 150);
+        };
+        tick();
       } else {
         state.activeLayers.delete(l.id);
+        row.classList.remove("loading");
         removeGeoJsonLayer(l.id);
       }
     };
@@ -941,7 +998,7 @@ function selectCapture(name, fit) {
   if (fit) fitCapture();
 }
 async function loadCaptures() {
-  try { state.captures = await (await fetch("/api/captures")).json(); } catch { state.captures = []; }
+  try { state.captures = await apiJson("/api/captures"); } catch { state.captures = []; }
   if (!Array.isArray(state.captures)) state.captures = [];
   const sel = $("capture");
   sel.innerHTML = "";
@@ -963,11 +1020,9 @@ async function loadCaptures() {
 
 async function fetchModelInfo() {
   try {
-    const r = await fetch("/api/model", { cache: "no-store" });
-    if (!r.ok) return { ready: false, error: `server answered ${r.status}` };
-    return await r.json();
-  } catch {
-    return { ready: false, error: "server unreachable" };
+    return await apiJson("/api/model");
+  } catch (e) {
+    return { ready: false, error: /^(server answered|data unreachable)/.test(e.message) ? e.message : "server unreachable" };
   }
 }
 /* Apply what the server says. Once data has been shown, a failed or empty
@@ -1554,7 +1609,7 @@ map.on("move", updateStatus);
 
 map.on("load", async () => {
   try {
-    const cfg = await (await fetch("/api/config")).json();
+    const cfg = await apiJson("/api/config");
     state.minZoom = cfg.min_zoom ?? state.minZoom;
   } catch { /* defaults are fine */ }
   await loadCaptures();

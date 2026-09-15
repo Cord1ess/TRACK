@@ -20,3 +20,13 @@ algorithms/output/*
 Thumbs.db
 .idea/
 .vscode/
+
+# The road graph is committed once, gzipped (OpenStreetMap data, 5 MB), so the
+# collection workflow never has to query Overpass. Rebuild and re-gzip it when
+# the road network or the bbox changes.
+!algorithms/output/graph/
+algorithms/output/graph/*
+!algorithms/output/graph/dhaka.json.gz
+
+# The static site build_site.py produces for GitHub Pages
+site/

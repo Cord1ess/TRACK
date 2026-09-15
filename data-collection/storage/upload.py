@@ -1,11 +1,12 @@
-"""Upload one capture folder to the private Hugging Face dataset repo, then
-verify it landed.
+"""Upload one capture folder to the private Hugging Face dataset, then verify
+it landed.
 
     python storage/upload.py captures/<name> [--dry-run] [--allow-public]
 
-CYCLE_DIR defaults to the path in out/last_cycle.txt. The folder lands at
-cycles/YYYY-MM-DD/HHMM/ in one atomic commit that also refreshes latest.json
-at the repo root (slot, status, coverage, bytes) for at-a-glance health.
+The folder lands at captures/<name>/ in one commit that also refreshes
+latest.json at the repo root (when, status, coverage, size). The visualizer's
+tile caches inside the folder are not uploaded. The dataset is created private
+if it does not exist.
 
 Failsafes:
   * token is validated (whoami) before anything is sent
@@ -30,9 +31,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
+CACHE_DIRS = {"_pyramid", "_pyramid_clean", "_clean"}   # built by the visualizer, rebuilt on demand
+
+
 def local_files(cycle_dir: Path) -> dict[str, int]:
+    """Every file of the capture except the visualizer's tile caches."""
     return {p.relative_to(cycle_dir).as_posix(): p.stat().st_size
-            for p in cycle_dir.rglob("*") if p.is_file()}
+            for p in cycle_dir.rglob("*")
+            if p.is_file() and not CACHE_DIRS.intersection(p.relative_to(cycle_dir).parts)}
 
 
 def remote_files(api, repo: str, path_in_repo: str) -> dict[str, int]:
@@ -67,12 +73,13 @@ def main() -> int:
     print(f"[upload] {cycle_dir.parent.name}/{cycle_dir.name}: {len(files)} files, "
           f"{total // 1024} KB -> {path_in_repo} (status {manifest.get('status')})")
 
+    captured = manifest.get("captured_utc") or manifest.get("slot_utc")
     latest = {
-        "slot_utc": manifest.get("slot_utc"), "status": manifest.get("status"),
-        "coverage_pct": manifest.get("coverage_pct"), "bytes": manifest.get("bytes"),
-        "duration_s": manifest.get("duration_s"), "mode": manifest.get("mode"),
-        "zoom": manifest.get("zoom"), "warnings": len(manifest.get("warnings", [])),
-        "run_id": manifest.get("run_id"), "path": path_in_repo,
+        "captured_utc": captured, "slot_utc": captured, "status": manifest.get("status"),
+        "coverage_pct": manifest.get("coverage_pct"), "tiles_nonempty": manifest.get("tiles_nonempty"),
+        "expected_tiles": manifest.get("expected_tiles"), "bytes_tiles": manifest.get("bytes_tiles"),
+        "fetch_seconds": manifest.get("fetch_seconds"), "zoom": manifest.get("zoom"),
+        "warnings": len(manifest.get("warnings", [])), "path": path_in_repo,
         "uploaded_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
@@ -113,8 +120,7 @@ def main() -> int:
                               path_or_fileobj=str(cycle_dir / name)) for name in sorted(files)]
     ops.append(CommitOperationAdd(path_in_repo="latest.json",
                                   path_or_fileobj=io.BytesIO(json.dumps(latest, indent=1).encode())))
-    msg = (f"cycle {manifest.get('slot_utc')} {manifest.get('status')} "
-           f"cov {manifest.get('coverage_pct', 0)}%")
+    msg = f"capture {captured} {manifest.get('status')} cov {manifest.get('coverage_pct', 0)}%"
 
     for attempt in range(1, 4):
         try:

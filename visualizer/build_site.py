@@ -1,0 +1,157 @@
+"""Build the static site GitHub Pages serves: the visualizer and its data.
+
+    python build_site.py --out ../site [--keep 3] [--prune]
+
+Everything the dev server answers live is written as files:
+
+    data/manifest.json           what /api/config, /api/captures, /api/model,
+                                 /api/graph and /api/layers answer, in one file
+    data/model-<part>.<v>.json   the traffic model, versioned by content
+    data/graph-<part>.<v>.json   the road graph
+    data/layers/*.json           the algorithm layers and their index
+    tiles/<capture>/z/x/y.png    captured tiles: native zoom and the pyramid
+    tiles-clean/<capture>/...    the pure-colours variant
+
+Only the newest --keep captures with status ok or partial are included;
+--prune deletes the others from the captures folder. The page is marked
+static, so app.js reads data/manifest.json and polls it for a new version
+instead of talking to a server.
+"""
+
+import argparse
+import gzip
+import json
+import shutil
+import sys
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import graph_data as graph_mod  # noqa: E402
+import model as model_mod       # noqa: E402
+import server                   # noqa: E402  (capture listing, tile pyramid, clean tiles)
+
+
+def copy_app(out: Path) -> None:
+    for name in ("index.html", "app.js", "style.css"):
+        shutil.copyfile(HERE / "static" / name, out / name)
+    html = (out / "index.html").read_text(encoding="utf-8")
+    html = html.replace("<head>", '<head>\n  <meta name="track-static" content="1">', 1)
+    # the dev server serves the assets under /static/; on the site they sit
+    # beside the page, and relative paths also work under a project URL
+    html = html.replace('"/static/', '"')
+    (out / "index.html").write_text(html, encoding="utf-8")
+    (out / ".nojekyll").write_text("", encoding="utf-8")
+
+
+def pick_captures(keep: int) -> list[dict]:
+    caps = [c for c in server.list_captures() if c.get("status") in ("ok", "partial")]
+    caps.sort(key=lambda c: c.get("captured_utc") or "", reverse=True)
+    return caps[:keep]
+
+
+def copy_tiles(name: str, out: Path) -> int:
+    """Native tiles and the lower-zoom pyramid, laid out as z/x/y.png."""
+    root = server.CAPTURES / name
+    native = int(json.loads((root / "manifest.json").read_text(encoding="utf-8"))["zoom"])
+    n = 0
+    for clean in (False, True):
+        server.build_pyramid(name, quiet=True, clean=clean)
+        dst = out / ("tiles-clean" if clean else "tiles") / name
+        native_dir = server.cache_dir(root, "_clean") if clean else root / "tiles"
+        for p in native_dir.glob(f"z{native}_*_*.png"):
+            _, x, y = p.stem.split("_")
+            target = dst / str(native) / x / f"{y}.png"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(p, target)
+            n += 1
+        pyramid = server.cache_dir(root, "_pyramid_clean" if clean else "_pyramid")
+        for p in pyramid.rglob("*.png"):
+            target = dst / p.relative_to(pyramid)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(p, target)
+            n += 1
+    return n
+
+
+def write_vector(service, parts: tuple, out: Path, prefix: str) -> dict:
+    """The versioned payloads as plain JSON; the CDN compresses them on the way out."""
+    if not service.ensure():
+        raise SystemExit(f"{prefix}: {service.error or 'no data'}")
+    for part in parts:
+        data, version = service.payload(part)
+        (out / f"{prefix}-{part}.{version}.json").write_bytes(gzip.decompress(data))
+    return service.info()
+
+
+def copy_layers(out: Path) -> list[dict]:
+    src = server.OUTPUT / "layers"
+    index = src / "index.json"
+    if not index.exists():
+        return []
+    idx = json.loads(index.read_text(encoding="utf-8"))
+    dst = out / "data" / "layers"
+    dst.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(index, dst / "index.json")
+    entries = []
+    for l in idx.get("layers", []):
+        f = src / l["file"]
+        if not f.exists():
+            continue
+        name = Path(l["file"]).stem + ".json"
+        shutil.copyfile(f, dst / name)
+        entries.append({**l, "url": f"data/layers/{name}",
+                        "built_utc": idx.get("built_utc", ""), "slot_utc": idx.get("slot_utc", "")})
+    return entries
+
+
+def folder_size(p: Path) -> int:
+    return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--out", type=Path, default=HERE.parent / "site")
+    ap.add_argument("--keep", type=int, default=3, help="newest captures to include")
+    ap.add_argument("--prune", action="store_true", help="delete captures not included")
+    args = ap.parse_args()
+    t0 = time.time()
+
+    out = args.out.resolve()
+    if out.exists():
+        shutil.rmtree(out)
+    (out / "data").mkdir(parents=True)
+    copy_app(out)
+
+    caps = pick_captures(args.keep)
+    for c in caps:
+        n = copy_tiles(c["name"], out)
+        print(f"  tiles   {c['name']}: {n} files", flush=True)
+    if args.prune:
+        keep = {c["name"] for c in caps}
+        for d in server.CAPTURES.iterdir():
+            if d.is_dir() and d.name not in keep and (d / "manifest.json").exists():
+                shutil.rmtree(d)
+                print(f"  pruned  {d.name}", flush=True)
+
+    model = write_vector(model_mod.discover(server.OUTPUT), ("major", "minor"), out / "data", "model")
+    print(f"  model   version {model.get('version')}: {model.get('lines', 0):,} lines", flush=True)
+    graph = write_vector(graph_mod.discover(server.OUTPUT), ("nodes", "links"), out / "data", "graph")
+    print(f"  graph   version {graph.get('version')}: {graph.get('links', 0):,} segments", flush=True)
+    layers = copy_layers(out)
+    print(f"  layers  {len(layers)}", flush=True)
+
+    manifest = {
+        "built_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "min_zoom": server.MIN_ZOOM, "keep": args.keep,
+        "captures": caps, "model": model, "graph": graph, "layers": layers,
+    }
+    (out / "data" / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
+    print(f"  site    {folder_size(out) / 1e6:.0f} MB, {sum(1 for _ in out.rglob('*') if _.is_file()):,} files "
+          f"-> {out}  ({time.time() - t0:.0f}s)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

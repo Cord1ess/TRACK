@@ -1,48 +1,75 @@
 # TRACK
 
-**T**raffic **R**oute optimization using **A**\* search, **C**lustering, and **K**NN.
-A data-driven approach to congestion-aware traffic optimization in Dhaka City.
+Traffic Route optimization using A* search, Clustering and KNN.
+A data-driven approach to congestion-aware traffic optimization in Dhaka.
 
-TRACK learns where and when Dhaka gets congested from Google's traffic layer, then shows
-the whole city being rebalanced: thousands of A\* trips routed inside a traffic-assignment
-loop until no route has an obviously better alternative (Wardrop's user equilibrium).
-Concept and pitch: [`docs/idea.md`](docs/idea.md), [`docs/presentation.md`](docs/presentation.md).
-Current plan: [`docs/project-plan.md`](docs/project-plan.md).
+TRACK reads Google's traffic layer for the whole Dhaka metro area, turns it into
+a traffic weight for every road in the city, and runs its algorithms on that
+data: A*, Dijkstra, K-means, KNN, logistic regression, a gravity demand model
+and a traffic assignment loop. A map shows the captured traffic, the model, the
+road graph, and one layer per algorithm.
 
-## Three subsystems
+A GitHub Actions workflow repeats the whole thing every 10 minutes and publishes
+the result to GitHub Pages.
 
-| Folder | Purpose | Run |
+## Parts
+
+| Folder | What it does | Run |
 |---|---|---|
-| [`data-collection/`](data-collection/) | Keyless capture of Google traffic tiles into `captures/<name>/` with strict validation and failsafes | `python collector/capture.py --name <name>` |
-| [`algorithms/`](algorithms/) | Images to data (decoder), OpenStreetMap road graph, traffic weights for **every** road, A\*, Dijkstra, BPR, gravity demand, assignment loop, K-means, KNN, logistic regression. Clean, tested, readable | `python pipeline.py` |
-| [`visualizer/`](visualizer/) | Dev server + map UI: captures as real tile layers, TRACK's own data rendered in the same tile grid for side-by-side comparison, algorithm outputs as GeoJSON layers, clean keyless vector basemap | `python server.py` |
+| [data-collection/](data-collection/) | Captures Google's traffic tiles for the metro area. No API key. Every tile is validated. | `python collector/capture.py --name <name>` |
+| [algorithms/](algorithms/) | Road graph from OpenStreetMap, tile decoder, imputation, the algorithms, one map layer per algorithm. | `python pipeline.py` |
+| [visualizer/](visualizer/) | The map. A dev server for local use; `build_site.py` makes the static site for GitHub Pages. | `python server.py` |
 
-They communicate only through files with fixed contracts (see the plan, section 3):
-a capture folder, a road-graph JSON, an edge-weight CSV, and GeoJSON layers.
+The parts share files only: a capture folder, the road graph, the edge weight
+table, and the layer index.
 
-## From pictures to a model of the city
+## How the data flows
 
-Google paints traffic on roughly a tenth of Dhaka's road length, essentially the
-arterial network. TRACK turns that into its own dataset covering all of it:
+1. Capture. 4,928 tiles at zoom 17 cover the metro area. About 13 minutes at 8 requests a second.
+2. Graph. 48,413 nodes and 110,382 directed edges from OpenStreetMap, 8,302 km, no edge longer than 150 m. Built once and committed.
+3. Decode. Every edge is sampled along its length and read from the tiles into a weight: green 25, yellow 55, red 85, dark red 105. 13 seconds.
+4. Impute. Google paints about a tenth of the network. The rest is predicted from the nearest observed roads with KNN, faded to a K-means zone average far from any data. 16 seconds.
+5. Layers. Every algorithm runs on the result and writes a map layer. 65 seconds.
+6. Site. The map and all its data as static files. 19 seconds.
 
-1. **Capture** the traffic layer as transparent tiles, no API key.
-2. **Build** the road graph from OpenStreetMap: 33 k nodes, 76 k directed edges,
-   5 339 km, every edge cut to at most 150 m so one edge means one traffic condition.
-3. **Decode** the tiles onto the graph into a continuous weight per edge
-   (green 25, yellow 55, red 85, dark red 105; `weight / 100` is the v/c ratio BPR takes).
-4. **Impute** the roads Google never painted, from the roads around them, and record
-   for every edge whether its weight was observed or predicted.
-5. **Route** with A\* on BPR costs, so a jam on an arterial pushes trips onto the side
-   streets that now have costs of their own.
+## Collection and deployment
 
-## Quick start
+`.github/workflows/collect.yml` runs every 10 minutes: capture, pipeline, build,
+deploy. Runs never overlap. A capture takes about 13 minutes, so the site
+updates about every 15 minutes. A failed capture stops the run and nothing is
+deployed.
+
+Setup, once:
+
+1. Settings, Pages, Source: GitHub Actions.
+2. Optional: repository secrets `HF_TOKEN` and `HF_REPO` archive every capture to a private Hugging Face dataset. Without them that step is skipped.
+3. Actions, collect, Run workflow. After that the schedule takes over.
+
+The site keeps the last 3 captures (`KEEP` in the workflow). The page checks
+`data/manifest.json` every 5 seconds and swaps in new data without a reload.
+
+Google's terms do not allow storing or republishing their map tiles. The site
+publishes the captured tiles anyway, by the project owner's decision. GitHub
+could take the site down for it.
+
+## Run locally
 
 ```
-cd data-collection && pip install -r requirements.txt && python tests/selftest.py --network
-cd ../visualizer   && pip install -r requirements.txt && python server.py     # open http://127.0.0.1:8765
-cd ../algorithms   && pip install -r requirements.txt && python -m pytest tests -q
-python pipeline.py    # graph -> decode -> impute, then tick "show our data" in the visualizer
+cd algorithms       && pip install -r requirements.txt && python -m pytest tests -q
+cd ../data-collection && pip install -r requirements.txt && python collector/capture.py --name my-capture
+cd ../algorithms    && python pipeline.py --capture ../data-collection/captures/my-capture
+cd ../visualizer    && pip install -r requirements.txt && python server.py    # http://127.0.0.1:8765
 ```
 
-The first full-city capture is included: `data-collection/captures/test-capture-2026-09-12/`
-(taken around 1 AM Dhaka time, so traffic is sparse; a daytime capture is much denser).
+The road graph is included as `algorithms/output/graph/dhaka.json.gz`; the
+pipeline unpacks it on first run, so nothing queries OpenStreetMap unless you
+ask (`python pipeline.py --only graph --force`). Captures and pipeline outputs
+are not committed.
+
+To build the static site yourself: `python visualizer/build_site.py --out site`,
+then serve the `site` folder with any file server.
+
+## Docs
+
+- [docs/project-plan.md](docs/project-plan.md): decisions, layout, file contracts, status, risks.
+- [docs/presentation.md](docs/presentation.md): talking points.

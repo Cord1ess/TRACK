@@ -1,87 +1,117 @@
-# TRACK Algorithms
+# TRACK algorithms
 
-Clean, readable, from-scratch implementations of everything TRACK computes, each
-with a docstring that explains the idea and a test that proves it. numpy only.
+Everything TRACK computes, written from scratch on numpy. Each module opens
+with a short note on what it does. `tests/` has one file per algorithm.
 
 ```
 pip install -r requirements.txt
 python -m pytest tests -q
 ```
 
-## Map of the package
+## Modules
 
-| Module | What it is | Role in TRACK |
-|---|---|---|
-| `geo.py` | Web Mercator tile/pixel math, haversine | shared by decoder and A\* heuristic |
-| `graph/road_graph.py` | `RoadGraph`: nodes, directed edges, capacity, free-flow time; JSON + GeoJSON | the network everything runs on |
-| `graph/build_graph.py` | OpenStreetMap (Overpass) → `RoadGraph`, split at junctions and at a length cap, one-way handling | the Dhaka graph |
-| `decode/palette.py` | measured Google colours → class 1..4, casing-blend recovery | colour → class |
-| `decode/decoder.py` | capture tiles + graph → per-edge weight table (CSV) + GeoJSON layer | **images → data** |
-| `traffic/weights.py` | the 25/55/85/105 weight scale, demotion ladder, colour ramp | class → number the model uses |
-| `traffic/impute.py` | fills in every road Google never painted; measures its own assumption | **partial data → the whole city** |
-| `search/astar.py` | A\* with admissible haversine heuristic, injectable costs | the router, called thousands of times |
-| `search/dijkstra.py` | one-to-all least cost | baselines, hub distances |
-| `traffic/bpr.py` | BPR volume-delay function | congestion → travel time |
-| `traffic/demand.py` | gravity-model synthetic OD demand over zones | trips without vehicle data |
-| `traffic/assignment.py` | incremental assignment and MSA loop; frames for the visualizer | the "thinning out" engine |
-| `ml/kmeans.py` | K-means++ clustering | traffic scenarios |
-| `ml/knn.py` | KNN classifier and regressor + standardisation | congestion prediction, road imputation |
-| `ml/logistic_regression.py` | logistic regression + one-vs-rest | congestion prediction, compared with KNN |
+| Module | What it does |
+|---|---|
+| `geo.py` | Web Mercator tile maths and haversine distance |
+| `graph/road_graph.py` | `RoadGraph`: junctions, directed edges, capacity, free-flow time; JSON and GeoJSON |
+| `graph/build_graph.py` | OpenStreetMap (Overpass) to `RoadGraph`, cut at every junction and every 150 m |
+| `decode/palette.py` | Google's traffic colours to a class per pixel |
+| `decode/decoder.py` | Capture tiles and graph to a weight per edge |
+| `traffic/weights.py` | The weight scale (green 25, yellow 55, red 85, dark red 105) and the demotion ladder |
+| `traffic/impute.py` | A weight for every road Google never painted, with its own checks |
+| `traffic/bpr.py` | Travel time from volume over capacity (BPR function) |
+| `traffic/demand.py` | Trips between zones from a gravity model |
+| `traffic/assignment.py` | Route trips on congested costs and feed the load back: incremental and MSA |
+| `search/astar.py` | A* with a haversine heuristic and an injected cost function |
+| `search/dijkstra.py` | Least cost from one node to every node |
+| `ml/kmeans.py` | K-means with k-means++ start |
+| `ml/knn.py` | KNN classifier and regressor |
+| `ml/logistic_regression.py` | Logistic regression, binary and one-vs-rest |
+| `layers.py` | Runs every algorithm on the current data and writes one map layer each |
 
-## Pipeline on real data
-
-```
-python pipeline.py                  # graph -> decode -> impute, skipping what is already current
-python pipeline.py --force          # redo everything
-python pipeline.py --only impute --decay-m 180 --demote-strength 0.6    # retune just the model
-cd ../visualizer && python server.py    # then tick "show our data"
-```
-
-Or the three stages by hand:
+## Pipeline
 
 ```
-python -m track_algos.graph.build_graph --out output/graph/dhaka.json --max-edge-m 150 \
-       --osm-cache output/graph/dhaka-osm.json
-python -m track_algos.decode.decoder --capture ../data-collection/captures/test-capture-2026-09-12 \
-       --graph output/graph/dhaka.json --out output/traffic/observed.csv --geojson
-python -m track_algos.traffic.impute --graph output/graph/dhaka.json \
-       --observed output/traffic/observed.csv --out output/traffic/complete.csv
+python pipeline.py --capture ../data-collection/captures/<name>
 ```
+
+Stages: `graph`, `decode`, `impute`, `layers`. A stage is skipped when its
+output is newer than its inputs. `--force` redoes everything, `--only
+decode,impute` runs a subset, `--quick` skips the hold-out evaluation in impute
+(the collection workflow uses it).
+
+The road graph is committed as `output/graph/dhaka.json.gz` and unpacked on
+first run. `python pipeline.py --only graph --force` rebuilds it from
+OpenStreetMap; gzip the result to update the committed copy.
+
+Times on the metro capture: decode 13 s, impute 16 s (225 s with the
+evaluation), layers 65 s.
 
 ## The traffic weight
 
-One number per directed edge, higher means worse: **green 25, yellow 55, red 85,
-dark red 105**. Divided by 100 it is the volume/capacity ratio BPR takes, so the
-scale is both readable and directly usable as a cost. It is continuous, not a
-class label: an edge that is half green and half red lands near 55 rather than
-pretending to be one or the other.
+One number per directed edge, higher means worse: green 25, yellow 55, red 85,
+dark red 105. Divided by 100 it is the volume over capacity ratio the BPR
+function takes. It is continuous, so an edge that is half green and half red
+lands near 55 instead of being forced into one class.
 
-`source` says where a weight came from. `observed` means Google painted that
-road and we read it; `predicted` means we inferred it. On the Dhaka test capture
-that split is about 10 % observed to 90 % predicted, because Google paints
-almost only the arterial network.
+`source` says where a weight came from: `observed` means Google painted that
+road and the decoder read it, `predicted` means it was inferred. On the metro
+capture that is 4,878 observed edges out of 110,382.
 
-## What the model decided, and what the data said
+The BPR function is calibrated so a dark red road runs at a quarter of its
+free-flow speed. With the textbook value the four levels would differ by under
+20 % and the router would ignore traffic.
 
-Measured on the 2026-09-12 capture, all of it reproduced in
-`output/traffic/impute-report.json` on every run:
+## What the data says
 
-| Question | Answer from the data |
+Measured on the 2026-09-12 metro capture, written to
+`output/traffic/impute-report.json` on every full run:
+
+| Question | Answer |
 |---|---|
 | Which side of the road is a direction's line on? | Left. Sampling left of travel observes 72 % of major-road edges, right observes 47 %. |
-| How much of Dhaka does Google paint? | 81 % of primary, 69 % of trunk and motorway, 56 % of secondary, 20 % of tertiary, 2.8 % of residential. About 10 % of road length. |
-| Is a smaller road quieter than the big road beside it? | Only where the big road is busy. Across all pairs the difference is +4 (no effect, mostly green beside green). Beside a road at yellow or worse it is **-21 weight points**, lower in 62 % of pairs: almost exactly one rung of the ladder. |
-| Does predicting from neighbours work? | Hold-out on observed edges: MAE about 8 weight points and 81 % of predictions land on the right rung, against 14 for predicting the global mean. |
+| How much of Dhaka does Google paint? | 81 % of primary, 69 % of trunk and motorway, 56 % of secondary, 20 % of tertiary, 2.8 % of residential. About a tenth of road length. |
+| Is a smaller road quieter than the big road beside it? | Only where the big road is busy. Beside a road at yellow or worse the smaller road averages 15 points lower and is lower in 62 % of pairs. |
+| Does predicting from neighbours work? | Hold-out on observed edges: mean error 6 weight points and 85 % of predictions on the right level, against 15 points for predicting the global mean. |
 
-Two caveats the report repeats and the write-up should keep: the held-out edges
-are mostly major roads, because those are the ones with data, so the hold-out
-cannot validate the demotion step for residential streets; and Google paints a
-residential street only where it has probe traffic, so the small roads in the
-sample are the busy ones. The absence of data is itself weak evidence of a quiet
-road, which is the real argument for demoting.
+Two caveats. The held-out edges are mostly major roads, because those are the
+ones with data, so the hold-out cannot validate the demotion step for
+residential streets. And Google paints a residential street only where it has
+probe traffic, so the small roads in the sample are the busy ones.
 
-## Contracts
+## Layers
 
-- Edge weight CSV: `slot_utc, edge_id, cls, weight, f_green, f_orange, f_red, f_darkred, coverage, vc_ratio, n_samples, source`; `complete.csv` adds `method`.
-- GeoJSON for the visualizer: features carry `cls` (0..4) and/or `color` (hex), optional `width`.
-- Assignment frames: `Assignment.frames[i]` = `{label, volume, vc, stats}`; `frame_geojson(frame)` renders one.
+`layers.py` writes `output/layers/index.json` and one GeoJSON per layer.
+
+| Layer | Algorithm | What it shows |
+|---|---|---|
+| `decoder-coverage` | decoder | Observed roads, shaded by how much of each road Google painted |
+| `impute-method` | impute | Every road by how its weight was decided |
+| `kmeans-zones` | K-means | Observed roads grouped into 24 zones, with zone centres |
+| `knn-holdout` | KNN | A fifth of the observed roads hidden and predicted; colour is the error |
+| `lr-classes` | logistic regression | Predicted traffic level for every road; hold-out accuracy against KNN |
+| `dijkstra-reach` | Dijkstra | Minutes from Shahbagh to every road on today's traffic |
+| `astar-routes` | A* | Six routes across the city, on an empty network and on today's traffic |
+| `demand-flows` | gravity model | The strongest zone-to-zone flows |
+| `assignment-before` | assignment | The load before new trips |
+| `assignment-all-at-once` | assignment | Every trip on its shortest path, no feedback |
+| `assignment-incremental` | assignment | Trips routed in ten batches, each avoiding what the last filled |
+
+On the metro capture: 617 roads over capacity when every trip takes its
+shortest path at once, 496 with incremental assignment, from 263 before the
+trips. 600 A* searches in 40 seconds.
+
+## File contracts
+
+Edge weight table, `observed.csv` and `complete.csv`:
+`slot_utc, edge_id, cls, weight, f_green, f_orange, f_red, f_darkred, coverage,
+vc_ratio, n_samples, source`. `complete.csv` adds `method`: observed,
+neighbours, neighbours_demoted or zone_blended. A `.meta.json` beside each
+table records the `graph_id` its edge ids belong to; readers refuse a mismatch.
+
+Layer index, `output/layers/index.json`:
+`{graph_id, capture, slot_utc, built_utc, seconds, layers: [{id, file, name,
+algorithm, description, legend: [{color, label}], summary, stats, features}]}`.
+
+Layer GeoJSON features carry `color` (hex) or `cls` (1 to 4) and optionally
+`width`; the visualizer styles them from those.

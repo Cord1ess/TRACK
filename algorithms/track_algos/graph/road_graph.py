@@ -1,14 +1,13 @@
-"""RoadGraph: the directed road network every algorithm operates on.
+"""The directed road network every algorithm runs on.
 
-Nodes are intersections (lon, lat). Edges are directed road segments with the
-attributes the traffic engine needs: length, free-flow travel time, capacity.
-A two-way street is two edges (u->v and v->u), which is what lets the decoder
-keep separate congestion per direction and lets assignment load each
-direction independently.
+Nodes are junctions (lon, lat). Edges are directed road segments with length,
+free-flow time and capacity. A two-way street is two edges, so each direction
+carries its own traffic.
 
-The JSON form is the file contract with the decoder and the visualizer:
-    {"nodes": {id: [lon, lat]}, "edges": [{id, u, v, length_m, highway, lanes,
-     oneway, capacity_vph, free_flow_kmph, free_flow_s, geometry: [[lon,lat],...]}]}
+JSON form:
+    {"graph_id", "nodes": {id: [lon, lat]},
+     "edges": [{id, u, v, length_m, highway, lanes, oneway, capacity_vph,
+                free_flow_kmph, free_flow_s, geometry: [[lon, lat], ...]}]}
 """
 
 import hashlib
@@ -16,11 +15,10 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from ..geo import polyline_length_m
+from ..geo import haversine_m, polyline_length_m
 
-# Practical per-lane capacity (vehicles/hour) and free-flow speed by OSM class.
-# Standard planning defaults; Dhaka mixed traffic makes these rough, which is
-# fine because BPR only needs volume/capacity as a ratio.
+# Per-lane capacity (vehicles/hour) and free-flow speed by OSM class. Planning
+# defaults; BPR only needs volume/capacity as a ratio, so rough is fine.
 CLASS_DEFAULTS = {
     "motorway":      {"cap_per_lane": 1900, "speed": 80, "lanes": 3},
     "trunk":         {"cap_per_lane": 1600, "speed": 60, "lanes": 3},
@@ -32,9 +30,7 @@ CLASS_DEFAULTS = {
     "living_street": {"cap_per_lane": 300,  "speed": 15, "lanes": 1},
     "service":       {"cap_per_lane": 300,  "speed": 15, "lanes": 1},
 }
-
-
-CLASS_ORDER = list(CLASS_DEFAULTS)   # most important first; index = "how small is this road"
+CLASS_ORDER = list(CLASS_DEFAULTS)   # biggest road first
 
 
 def class_defaults(highway: str) -> dict:
@@ -43,9 +39,7 @@ def class_defaults(highway: str) -> dict:
 
 
 def class_rank(highway: str) -> int:
-    """0 for a motorway up to 8 for a service road. A bigger rank means a
-    smaller road, which is what lets the imputer ask "is this street smaller
-    than the roads I am copying from?"."""
+    """0 for a motorway up to 8 for a service road; bigger means a smaller road."""
     base = (highway or "").replace("_link", "")
     return CLASS_ORDER.index(base) if base in CLASS_ORDER else CLASS_ORDER.index("unclassified")
 
@@ -76,7 +70,6 @@ class RoadGraph:
         self.out: dict[int, list[int]] = {}   # node -> outgoing edge ids
         self._next_edge = 0
 
-    # ---- building
     def add_node(self, nid: int, lon: float, lat: float) -> None:
         self.nodes[nid] = (lon, lat)
         self.out.setdefault(nid, [])
@@ -102,7 +95,6 @@ class RoadGraph:
         geom = geometry or [list(self.nodes[u]), list(self.nodes[v])]
         return self.add_edge(u, v, geom, **kw), self.add_edge(v, u, list(reversed(geom)), **kw)
 
-    # ---- queries
     def neighbors(self, u: int):
         """Yield (v, edge) for every outgoing edge of u."""
         for eid in self.out.get(u, []):
@@ -110,15 +102,11 @@ class RoadGraph:
             yield e.v, e
 
     def nearest_node(self, lon: float, lat: float) -> int:
-        from ..geo import haversine_m
         return min(self.nodes, key=lambda n: haversine_m(lon, lat, *self.nodes[n]))
 
-    # ---- persistence
     def graph_id(self) -> str:
-        """Short content fingerprint. Edge ids restart at 0 on every build, so a
-        weight table from an older graph would line up numerically with a newer
-        one and silently describe different roads. Everything derived from a
-        graph records this id, and the visualizer refuses a mismatch."""
+        """Content fingerprint. Edge ids restart at 0 on every build, so files
+        derived from a graph record this id and readers refuse a mismatch."""
         h = hashlib.sha1(f"{len(self.nodes)}|{len(self.edges)}|".encode())
         for e in self.edges.values():
             h.update(f"{e.id}:{e.u}:{e.v}:{e.length_m:.1f};".encode())
@@ -151,8 +139,7 @@ class RoadGraph:
         return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
     def to_geojson(self, edge_props: dict | None = None) -> dict:
-        """Edges as a FeatureCollection; edge_props maps edge id -> extra properties
-        (e.g. cls, color, width) so the visualizer can style them."""
+        """Edges as a FeatureCollection. edge_props maps edge id to extra properties."""
         feats = []
         for e in self.edges.values():
             props = {"id": e.id, "highway": e.highway, "length_m": round(e.length_m, 1),

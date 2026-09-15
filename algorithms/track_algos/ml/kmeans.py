@@ -1,16 +1,7 @@
-"""K-means clustering, written from scratch.
+"""K-means clustering with k-means++ initialisation.
 
-Groups observations into k clusters by repeating two steps until the
-assignments stop changing:
-    assign: each point joins the cluster whose centroid is nearest
-    update: each centroid moves to the mean of its points
-This minimises within-cluster squared distance. It is the pattern-discovery
-step in TRACK: each edge (or time slot) becomes a vector of congestion values
-across the week, and the clusters are the recurring traffic scenarios
-("weekday rush hour", "weekend afternoon", "off-peak") the simulation runs on.
-
-Initialisation uses k-means++ (spread-out starting centroids), which avoids
-the poor local optima plain random starts often produce.
+Repeats two steps until the centroids stop moving: assign each point to its
+nearest centroid, then move each centroid to the mean of its points.
 """
 
 import numpy as np
@@ -25,6 +16,8 @@ class KMeans:
         self.inertia_: float = 0.0
 
     def _init_pp(self, X: np.ndarray) -> np.ndarray:
+        """k-means++: each new centroid is drawn with probability proportional
+        to its squared distance from the nearest existing one."""
         n = X.shape[0]
         centroids = [X[self.rng.integers(n)]]
         for _ in range(1, self.k):
