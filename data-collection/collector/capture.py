@@ -1,7 +1,7 @@
 """One keyless capture of Google's traffic layer over the configured area.
 
     python collector/capture.py --name <capture-name> [--bbox N,S,E,W] [--zoom 17]
-                                [--rate 8] [--workers 6] [--fill-gaps] [--incidents]
+                                [--rate 48] [--workers 16] [--fill-gaps] [--incidents]
 
 Writes captures/<name>/:
     manifest.json     zoom, bbox, tile range, coverage, validation stats, checks, status
@@ -95,7 +95,7 @@ def sweep(targets, cfg, limiter, stats, log, label):
             done += 1
             if data:
                 got[(x, y)] = data
-            if done % 250 == 0:
+            if done % 500 == 0:
                 log(f"[{label}] {done}/{len(targets)} ({len(got)} valid)")
     return got
 
@@ -147,6 +147,8 @@ def run(cfg: dict, name: str, out_root: Path, log: Log) -> tuple[Path | None, di
                     tiles[t] = d
                     gaps_filled += 1
     fetch_s = round(time.time() - t0, 1)
+    if limiter.slowed:
+        log(f"[capture] the server asked for less {stats['slow_downs']} times; rate is now {limiter.rate}/s")
 
     for (x, y), data in tiles.items():
         (out_dir / "tiles" / f"z{cfg['zoom']}_{x}_{y}.png").write_bytes(data)
@@ -176,7 +178,8 @@ def run(cfg: dict, name: str, out_root: Path, log: Log) -> tuple[Path | None, di
         "recovered_after_retry": stats.get("recovered_after_retry", 0),
         "validation_rejects": {k[len("invalid_"):]: v for k, v in stats.items() if k.startswith("invalid_")},
         "http_status": {k: v for k, v in stats.items() if k.startswith("http_")},
-        "fetch_seconds": fetch_s, "tiles_nonempty": audit["tiles_nonempty"],
+        "fetch_seconds": fetch_s, "rate": cfg["rate"], "rate_final": limiter.rate,
+        "slow_downs": stats.get("slow_downs", 0), "tiles_nonempty": audit["tiles_nonempty"],
         "mean_traffic_frac": audit["mean_traffic_frac"], "bytes_tiles": sum(len(d) for d in tiles.values()),
         "block_tiles": cfg["block_tiles"], "block_format": cfg.get("block_format", "rgba"), "blocks": blocks, "audit": audit,
     })

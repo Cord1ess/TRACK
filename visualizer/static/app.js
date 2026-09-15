@@ -1087,7 +1087,7 @@ function renderCollection() {
   if (run) parts.push(run);
   if (m && m.built_utc) parts.push(`site built ${escapeHtml(m.built_utc.slice(11, 16))} UTC`);
   parts.push(STATIC
-    ? "collection is triggered every 10 min and a capture takes about 13, so new data lands about every 20 min"
+    ? "collection is triggered every 10 min and a run takes about 8, so new data lands about every 10 min"
     : "the dev server checks for new data every 5 s");
   let html = parts.join(" · ");
   if (m && m.runs_url) html += ` · <a href="${escapeHtml(m.runs_url)}" target="_blank" rel="noopener">run history</a>`;

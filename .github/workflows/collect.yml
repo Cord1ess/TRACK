@@ -1,7 +1,7 @@
 # Capture Dhaka's traffic, run the pipeline, update the site on GitHub Pages.
 #
-# Triggers every 10 minutes. A capture takes about 13 minutes, so runs never
-# overlap: the next one waits. The road graph is committed (gzipped); the
+# Triggers every 10 minutes. A capture takes about 2 minutes and a run about
+# 8; the concurrency group keeps runs from overlapping. The road graph is committed (gzipped); the
 # pipeline unpacks it and never queries OpenStreetMap here. A failed capture
 # stops the run, so a bad cycle never deploys and the site keeps its last data.
 #

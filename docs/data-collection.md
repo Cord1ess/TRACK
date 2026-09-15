@@ -23,7 +23,7 @@ It uses four helpers in the same folder:
 ## How it works
 
 1. Google's map server sends the map as small square images called tiles, 256 pixels each. If you ask it for only the traffic layer, it sends the traffic lines alone on a transparent background. No account and no API key are needed.
-2. The Dhaka metro area at the closest useful zoom is 4,928 tiles. `capture.py` requests them one by one, 8 per second, so a run takes about 13 minutes.
+2. The Dhaka metro area at the closest useful zoom is 4,928 tiles. `capture.py` requests them 48 per second over a few open connections, so the download takes about 2 minutes.
 3. Every tile is checked on arrival: complete file, correct size, transparent background. A bad one is fetched again. Empty tiles surrounded by traffic are fetched again too, in case they were missed.
 4. At the end the run checks itself: did every tile arrive, is there traffic in the picture, do the colours still match Google's palette. It writes `manifest.json` with the answers and a status: `ok`, `partial` or `failed`.
 

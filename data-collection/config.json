@@ -7,8 +7,8 @@
     "east": 90.499678,
     "west": 90.326774
   },
-  "rate": 8,
-  "workers": 6,
+  "rate": 48,
+  "workers": 16,
   "retries": 4,
   "min_coverage_pct": 95,
   "min_free_gb": 1.0,
