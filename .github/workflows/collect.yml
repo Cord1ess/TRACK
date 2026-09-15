@@ -5,9 +5,9 @@
 # pipeline unpacks it and never queries OpenStreetMap here. A failed capture
 # stops the run, so a bad cycle never deploys.
 #
-# One-time setup: Settings -> Pages -> Source: "GitHub Actions".
-# Optional: repository secrets HF_TOKEN and HF_REPO archive every capture to a
-# private Hugging Face dataset; without them that step is skipped.
+# The first run enables Pages itself. Optional: repository secrets HF_TOKEN and
+# HF_REPO archive every capture to a private Hugging Face dataset; without them
+# that step is skipped.
 
 name: collect
 
@@ -86,6 +86,8 @@ jobs:
           key: captures-${{ github.run_id }}
 
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true           # turns Pages on (source: GitHub Actions) if it is not yet
 
       - uses: actions/upload-pages-artifact@v3
         with:

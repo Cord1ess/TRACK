@@ -10,7 +10,7 @@ and a traffic assignment loop. A map shows the captured traffic, the model, the
 road graph, and one layer per algorithm.
 
 A GitHub Actions workflow repeats the whole thing every 10 minutes and publishes
-the result to GitHub Pages.
+the result to GitHub Pages: https://cord1ess.github.io/TRACK/
 
 ## Parts
 
@@ -41,9 +41,8 @@ deployed.
 
 Setup, once:
 
-1. Settings, Pages, Source: GitHub Actions.
-2. Optional: repository secrets `HF_TOKEN` and `HF_REPO` archive every capture to a private Hugging Face dataset. Without them that step is skipped.
-3. Actions, collect, Run workflow. After that the schedule takes over.
+1. Optional: repository secrets `HF_TOKEN` and `HF_REPO` archive every capture to a private Hugging Face dataset. Without them that step is skipped.
+2. Actions, collect, Run workflow. The first run enables Pages; after that the schedule takes over.
 
 The site keeps the last 3 captures (`KEEP` in the workflow). The page checks
 `data/manifest.json` every 5 seconds and swaps in new data without a reload.
