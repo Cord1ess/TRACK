@@ -32,10 +32,10 @@ def validate_config(cfg: dict) -> dict:
         p.append("zoom must be 12..17 (Google serves no traffic above 17)")
     if cfg["tile_px"] != 256:
         p.append("tile_px must be 256 (only size the endpoint serves)")
-    if not (0.5 <= cfg["rate"] <= 100):
-        p.append("rate must be 0.5..100 req/s")
-    if not (1 <= cfg["workers"] <= 32):
-        p.append("workers must be 1..32")
+    if not (0.5 <= cfg["rate"] <= 200):
+        p.append("rate must be 0.5..200 req/s")
+    if not (1 <= cfg["workers"] <= 64):
+        p.append("workers must be 1..64")
     if not (0 <= cfg["retries"] <= 8):
         p.append("retries must be 0..8")
     if not (50 <= cfg["min_coverage_pct"] <= 100):

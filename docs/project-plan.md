@@ -22,7 +22,7 @@ TRACK/
 | 3 | Images are an intermediate. The decoder turns tiles into a weight per directed edge on our own OpenStreetMap graph; everything else uses the graph and that table. | Models and the map work on one dataset. |
 | 4 | The road graph is built once and committed, gzipped. | 5 MB. The workflow never queries OpenStreetMap. |
 | 5 | The algorithms are written from scratch on numpy, short and readable, one test file each. | They are what the project shows. |
-| 6 | Collection runs on GitHub Actions every 10 minutes and the site is GitHub Pages. | Free, no server to keep alive. A capture takes about 2 minutes and a run about 8, so the site updates about every 10 minutes. |
+| 6 | Collection runs on GitHub Actions every 10 minutes and the site is GitHub Pages. | Free, no server to keep alive. A capture takes about 1 minute and a run about 7, so the site updates about every 10 minutes. |
 | 7 | The public site includes the captured tiles. Every capture is also archived to a private Hugging Face dataset. | Owner's decision. Google's terms forbid storing and republishing tiles; GitHub could take the site down. |
 
 ## 2. Layout

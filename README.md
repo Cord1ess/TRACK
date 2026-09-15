@@ -25,7 +25,7 @@ table, and the layer index.
 
 ## How the data flows
 
-1. Capture. 4,928 tiles at zoom 17 cover the metro area. About 2 minutes at 48 requests a second.
+1. Capture. 4,928 tiles at zoom 17 cover the metro area. About 1 minute at 96 requests a second.
 2. Graph. 48,413 nodes and 110,382 directed edges from OpenStreetMap, 8,302 km, no edge longer than 150 m. Built once and committed.
 3. Decode. Every edge is sampled along its length and read from the tiles into a weight: green 25, yellow 55, red 85, dark red 105. 13 seconds.
 4. Impute. Google paints about a tenth of the network. The rest is predicted from the nearest observed roads with KNN, faded to a K-means zone average far from any data. 16 seconds.
@@ -38,7 +38,7 @@ Two workflows. `deploy.yml` publishes the site on every push that changes the
 app or the algorithms, from the data already collected, so the site is live
 before the first capture. `collect.yml` does one cycle: capture, pipeline,
 build, deploy, and then starts the next run itself, so one manual start keeps
-collection going. Runs never overlap. A capture takes about 2 minutes and
+collection going. Runs never overlap. A capture takes about 1 minute and
 the rest of a run about 6, so new data lands about every 10 minutes. A failed
 capture stops the run and the site keeps its last data; the 10-minute
 schedule restarts the chain, when GitHub honours it. The page shows the

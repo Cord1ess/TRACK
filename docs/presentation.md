@@ -19,7 +19,7 @@ A data-driven approach to congestion-aware traffic optimization in Dhaka.
 
 ## 4. The data, live
 
-- Google's tile server returns the traffic layer as a transparent tile with no API key. 4,928 tiles cover the metro area in about 2 minutes.
+- Google's tile server returns the traffic layer as a transparent tile with no API key. 4,928 tiles cover the metro area in about 1 minute.
 - A GitHub Actions workflow captures every 10 minutes, runs the pipeline and publishes the map. The page updates itself without a reload.
 - Every capture is archived. Show the site.
 

@@ -1,7 +1,7 @@
 """One keyless capture of Google's traffic layer over the configured area.
 
     python collector/capture.py --name <capture-name> [--bbox N,S,E,W] [--zoom 17]
-                                [--rate 48] [--workers 16] [--fill-gaps] [--incidents]
+                                [--rate 96] [--workers 32] [--fill-gaps] [--incidents]
 
 Writes captures/<name>/:
     manifest.json     zoom, bbox, tile range, coverage, validation stats, checks, status

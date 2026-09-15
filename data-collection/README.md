@@ -7,7 +7,7 @@ only that layer is asked for, so a capture is plain HTTPS requests.
 ```
 pip install -r requirements.txt
 python tests/selftest.py --network             # checks every component and one live tile
-python collector/capture.py --name my-capture  # the whole metro area from config.json: 4,928 tiles, about 2 minutes
+python collector/capture.py --name my-capture  # the whole metro area from config.json: 4,928 tiles, about 1 minute
 python collector/capture.py --name small --bbox 23.765,23.745,90.405,90.385
 python collector/reaudit.py --name my-capture  # after a palette change in config.json: rewrite the stats, keep the tiles
 ```
@@ -64,7 +64,7 @@ workflow stops on a bad capture.
 - Zoom 18 renders no traffic; 17 is the ceiling. Only 256 px tiles are served.
 - Residential lanes carry no traffic colour at any zoom. Google has no probe data there.
 - Fetching a tile again returns identical bytes, so there is no flicker to recover within a capture. The checks guard against transport failures.
-- A rate test from a home connection got clean responses at every step up to about 145 requests a second sustained, with no rise in latency, so the limit was not found. The collector runs at 48 a second with one open connection per worker, which takes about 2 minutes for 4,928 tiles, and halves its rate for the rest of the run on a 429 or 503 (`rate_final` and `slow_downs` in the manifest). GitHub Actions shares its addresses with many users; if Google throttles there, the run slows down instead of failing.
+- A rate test from a home connection got clean responses at every step up to about 145 requests a second sustained, with no rise in latency, so the limit was not found. The collector runs at 96 a second with one open connection per worker, which fetches 4,928 tiles in about 50 seconds, and halves its rate for the rest of the run on a 429 or 503 (`rate_final` and `slow_downs` in the manifest). GitHub Actions shares its addresses with many users; if Google throttles there, the run slows down instead of failing.
 - The capture area is the whole Dhaka metro area: 23.902086 to 23.711736 N, 90.326774 to 90.499678 E, 64 by 77 = 4,928 tiles at zoom 17. `config.json` holds it; `algorithms/track_algos/graph/build_graph.py` carries the same box and must change with it.
 - Time of day decides how much traffic a capture holds. A 04:26 capture painted 972 of 4,928 tiles. Capture during the day for dense data.
 - Google's palette, measured on 2.7 million opaque pixels: green #16e098 with border #049c65, amber #ffcf43 and #f5c025, red #d1352b inside a white casing (a bordered variant #f24e42 and #98423a also occurs), dark red #a92727 and #702323. A pixel takes the class of its nearest reference colour within tolerance 50. `config.json`, `algorithms/track_algos/decode/palette.py` and `visualizer/server.py` carry the same values and must change together.
