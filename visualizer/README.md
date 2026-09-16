@@ -94,10 +94,10 @@ tiles/<capture>/z/x/y.png    the newest --keep captures, native zoom and pyramid
 tiles-clean/<capture>/...    the pure-colours variant
 ```
 
-`--prune` deletes captures that were not kept; the workflow uses it to bound
-the cache it carries between runs. With twelve captures the site is about
-325 MB and 160,000 files, inside the 1 GB Pages limit; the model and graph
-files are served compressed by the CDN.
+`--prune` deletes captures that were not kept. The collection workflow does not
+use it: the runner is discarded after every run, so nothing accumulates there.
+With twelve captures the site is 526 MB and about 160,000 files, over half the
+1 GB Pages limit; the model and graph files are served compressed by the CDN.
 
 A capture arrives from the archive with its tile pyramid already built, so
 putting one on the site costs about 8 seconds rather than the 117 it takes to
