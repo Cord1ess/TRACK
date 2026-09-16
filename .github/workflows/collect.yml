@@ -79,14 +79,21 @@ jobs:
       - name: Install
         run: pip install -r data-collection/requirements.txt -r algorithms/requirements.txt
 
-      - name: Restore the previous captures and site
+      # Only the built site is cached, and only so a rebuild reuses the tiles
+      # of captures it already has. The captures themselves come from the
+      # archive, which is authoritative and arrives with the tile pyramids
+      # already built.
+      #
+      # The key is the run id so each save is a new entry; restore-keys finds
+      # the most recent. Caching the captures too put 95 entries and 9.08 GB
+      # against a 10 GB repository limit, so LRU was evicting entries within
+      # the hour and the newest was at risk of going with them.
+      - name: Restore the site built by the last run
         uses: actions/cache/restore@v4
         with:
-          path: |
-            data-collection/captures
-            site
-          key: captures-${{ github.run_id }}
-          restore-keys: captures-
+          path: site
+          key: site-${{ github.run_id }}
+          restore-keys: site-
 
       # The captures live in the archive now, not on disk. The Actions cache is
       # a shortcut, not the source: when it is cold, or a key has been evicted,
@@ -132,8 +139,12 @@ jobs:
           --capture "../data-collection/captures/${{ steps.capture.outputs.name }}"
           --only decode,impute,layers --quick
 
+      # No --prune: it existed to bound the captures the cache carried between
+      # runs, and the cache no longer carries them. The runner is thrown away
+      # when the run ends, so there is nothing to bound, and pruning would only
+      # delete captures this run just downloaded.
       - name: Build the site
-        run: python visualizer/build_site.py --out site --keep "$KEEP" --prune
+        run: python visualizer/build_site.py --out site --keep "$KEEP"
 
       # The site must publish whether or not the archive accepts the capture.
       # Run #98 failed here on an expired token and skipped deploy, upload and
@@ -144,13 +155,12 @@ jobs:
         continue-on-error: true
         run: python storage/upload.py "captures/${{ steps.capture.outputs.name }}"
 
-      - name: Keep the captures and site for the next run
+      - name: Keep the site for the next run
+        if: always()
         uses: actions/cache/save@v4
         with:
-          path: |
-            data-collection/captures
-            site
-          key: captures-${{ github.run_id }}
+          path: site
+          key: site-${{ github.run_id }}
 
       - uses: actions/configure-pages@v5
 

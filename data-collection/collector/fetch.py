@@ -93,10 +93,18 @@ def _connection(timeout: int) -> http.client.HTTPSConnection:
 
 
 def _drop_connection() -> None:
+    """Throw this thread's connection away.
+
+    The thread-local is cleared FIRST. If close() raises and we cleared after,
+    the dead connection would stay bound to this worker for the rest of the
+    run, and every tile it touched afterwards would fail."""
     conn = getattr(_local, "conn", None)
-    if conn is not None:
-        conn.close()
     _local.conn = None
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass                      # it is already unusable; nothing to salvage
 
 
 def validate_tile(data: bytes, tile_px: int) -> tuple[bool, str]:
@@ -155,8 +163,18 @@ def fetch(z: int, x: int, y: int, limiter: Limiter, stats, tile_px: int,
                     return (x, y), data, "ok"
                 last = reason
                 stats[f"invalid_{reason}"] += 1
+                # A body that did not validate often means a truncated read on
+                # a connection the server is closing. Start the next attempt
+                # on a fresh one rather than inheriting whatever state this is.
+                _drop_connection()
             else:
                 last = f"http_{status}"
+                # Any error status: the server may close the connection right
+                # after sending it, and reusing it then raises on the next
+                # request. Measured on a stub: a reused socket after a
+                # server-side close raises ConnectionResetError, and a fresh
+                # connection recovers.
+                _drop_connection()
                 if status in SLOW_STATUS:
                     stats["slow_downs"] += 1
                     limiter.slow_down()
