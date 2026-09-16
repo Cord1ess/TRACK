@@ -67,7 +67,7 @@ workflow stops on a bad capture.
 
 ## Facts
 
-- A capture archives its tile caches rather than rebuilding them. Measured: 18.5 MB stored against 2.9, and a twelve-capture site build drops from about 14 minutes to about 4. At 144 captures a day the archive grows roughly 2.7 GB a day, so the 100 GB tier lasts about five weeks; `scheduler/daily_check.py` prints the remaining headroom every morning.
+- A capture archives its tile caches rather than rebuilding them. Measured: 18.5 MB stored against 2.9, and a capture that arrives with its caches costs 8 s to put on the site instead of 117 s, so a twelve-capture build drops from 13.8 minutes to 1.6. Measured on the running archive: captures actually arrive every 7 minutes, about 206 a day, so with caches the archive grows 3.8 GB a day and the 100 GB tier lasts about 3.4 weeks. Only the newest `KEEP` captures are ever rebuilt into the site, so caches on older captures are never read again; `scheduler/daily_check.py` prints the remaining headroom every morning.
 - Zoom 18 renders no traffic; 17 is the ceiling. Only 256 px tiles are served.
 - Residential lanes carry no traffic colour at any zoom. Google has no probe data there.
 - Fetching a tile again returns identical bytes, so there is no flicker to recover within a capture. The checks guard against transport failures.
