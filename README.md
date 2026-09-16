@@ -9,8 +9,8 @@ data: A*, Dijkstra, K-means, KNN, logistic regression, a gravity demand model
 and a traffic assignment loop. A map shows the captured traffic, the model, the
 road graph, and one layer per algorithm.
 
-A GitHub Actions workflow repeats the whole thing every 10 minutes and publishes
-the result to GitHub Pages: https://cord1ess.github.io/TRACK/
+A GitHub Actions workflow repeats the whole thing about every 7 minutes and
+publishes the result to GitHub Pages: https://cord1ess.github.io/TRACK/
 
 ## Parts
 
@@ -64,8 +64,9 @@ Setup, once:
 3. Actions, deploy, Run workflow, to publish the site. Then Actions, collect, Run workflow, once: each run starts the next.
 4. Optional but recommended for a gap-free run: the external trigger and heartbeat in [docs/keeping-collection-alive.md](docs/keeping-collection-alive.md).
 
-The site keeps the last 3 captures (`KEEP` in the workflow). The page checks
-`data/manifest.json` every 5 seconds and swaps in new data without a reload.
+The site keeps the last 12 captures (`KEEP` in the workflow), about 90 minutes
+of sequence to play through. The page checks `data/manifest.json` every 5
+seconds and swaps in new data without a reload.
 
 Google's terms do not allow storing or republishing their map tiles. The site
 publishes the captured tiles anyway, by the project owner's decision. GitHub

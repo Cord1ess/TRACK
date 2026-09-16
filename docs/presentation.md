@@ -20,7 +20,7 @@ A data-driven approach to congestion-aware traffic optimization in Dhaka.
 ## 4. The data, live
 
 - Google's tile server returns the traffic layer as a transparent tile with no API key. 4,928 tiles cover the metro area in about 1 minute.
-- A GitHub Actions workflow captures every 10 minutes, runs the pipeline and publishes the map. The page updates itself without a reload.
+- A GitHub Actions workflow captures about every 7 minutes, runs the pipeline and publishes the map. Each run starts the next, so the chain sets the pace rather than a clock. The page updates itself without a reload.
 - Every capture is archived. Show the site.
 
 ## 5. From pixels to a city model
@@ -61,7 +61,7 @@ A data-driven approach to congestion-aware traffic optimization in Dhaka.
 
 ## 10. What is next
 
-- Scenarios over time: the workflow now produces a capture every 15 minutes; K-means over days of captures gives rush hour, off-peak and weekend patterns, and KNN against logistic regression per time of day.
+- Scenarios over time: the workflow now produces a capture about every 7 minutes; K-means over days of captures gives rush hour, off-peak and weekend patterns, and KNN against logistic regression per time of day.
 - The animated assignment run, and personal A-to-B routing on predicted costs.
 - Signal timing as a constraint problem, optional.
 
@@ -73,7 +73,7 @@ A data-driven approach to congestion-aware traffic optimization in Dhaka.
 
 ## 12. Questions to expect
 
-- Where is the data from? Google's traffic layer, read every 10 minutes; OpenStreetMap for the roads.
+- Where is the data from? Google's traffic layer, read about every 7 minutes; OpenStreetMap for the roads.
 - Is that allowed? Google's terms forbid storing their tiles. The owner accepted the risk for academic use.
 - Won't rerouting create new jams? Yes if everyone is routed at once. Batches with cost feedback are the fix, and the numbers show it: 617 against 496.
 - How do you get trips without vehicle data? A gravity model between zones, weighted by observed traffic.

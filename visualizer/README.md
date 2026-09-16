@@ -6,7 +6,7 @@ The map. Locally a dev server serves it with live data; for GitHub Pages
 ```
 pip install -r requirements.txt
 python server.py                            # http://127.0.0.1:8765
-python build_site.py --out ../site --keep 3 # the static site
+python build_site.py --out ../site --keep 12 # the static site
 ```
 
 ## What it shows
@@ -22,8 +22,8 @@ slowdown the current settings give it, or a junction for its degree and roads.
 
 Hotkeys: `T` capture, `M` model, `C` A/B flip, `P` pure colours, `L` labels,
 `B` base map, `F` fit, `I` inspect, `G` road graph, `N` reset bearing, `1` `2`
-light and dark, `\` panel, space play and pause, arrows step the timeline,
-`?` for the list.
+light and dark, `\` panel, space play and pause, shift with the arrows steps
+from capture to capture, `?` for the list.
 
 ## Tuning weights live
 
@@ -39,8 +39,16 @@ cd ../algorithms && python pipeline.py --only impute,layers --demote-strength 0.
 
 ## Timeline
 
-The bar at the bottom is a week of 15-minute slots. Slots with a capture are
-marked; drag, scroll, arrow along it, or press play.
+The bar at the bottom is a week, with one mark per capture placed at its own
+timestamp rather than snapped to a grid. Two switches pick the timeline:
+scheduled captures, the unbroken collection sequence, or tests taken by hand.
+Play walks the captures themselves at 0.5x to 4x, the wheel and shift-arrows
+step between them, and dragging lands on the nearest one.
+
+A week of slots was the earlier design and it broke: at one capture every six
+minutes, twelve captures collapsed into five 15-minute slots, seven were
+unreachable, and play could not advance because stepping landed back on the
+same slot.
 
 ## Live data
 
@@ -70,14 +78,14 @@ layer has gone missing, hidden or stuck part-way through an animation.
 
 ## Static site
 
-`build_site.py --out ../site --keep 3` writes the following. An existing site
+`build_site.py --out ../site --keep 12` writes the following. An existing site
 folder is reused: a capture's tiles never change once written, so only tiles
 for a capture the site does not have yet are copied and tiles for captures no
 longer kept are deleted. Everything else is rewritten every time, and `--fresh`
 rebuilds from empty.
 
 ```
-index.html, app.js, style.css
+index.html, style.css, js/    the page and its ES modules
 data/manifest.json           the /api answers, in one file
 data/model-<part>.<v>.json   the model, versioned by content
 data/graph-<part>.<v>.json   the road graph
@@ -87,8 +95,13 @@ tiles-clean/<capture>/...    the pure-colours variant
 ```
 
 `--prune` deletes captures that were not kept; the workflow uses it to bound
-the cache it carries between runs. With two captures the site is about 105 MB
-and 20,000 files; the model and graph files are served compressed by the CDN.
+the cache it carries between runs. With twelve captures the site is about
+325 MB and 160,000 files, inside the 1 GB Pages limit; the model and graph
+files are served compressed by the CDN.
+
+A capture arrives from the archive with its tile pyramid already built, so
+putting one on the site costs about 8 seconds rather than the 117 it takes to
+regenerate.
 
 ## API
 

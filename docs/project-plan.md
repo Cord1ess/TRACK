@@ -9,7 +9,7 @@ TRACK/
   data-collection/    capture of Google traffic tiles -> captures/<name>/
   algorithms/         road graph, decoder, imputation, the algorithms, map layers
   visualizer/         the map: dev server locally, static site on GitHub Pages
-  .github/workflows/  collect.yml: capture, pipeline, build, deploy every 10 minutes
+  .github/workflows/  collect.yml: capture, pipeline, build, deploy; each run starts the next
   docs/
 ```
 
@@ -22,7 +22,7 @@ TRACK/
 | 3 | Images are an intermediate. The decoder turns tiles into a weight per directed edge on our own OpenStreetMap graph; everything else uses the graph and that table. | Models and the map work on one dataset. |
 | 4 | The road graph is built once and committed, gzipped. | 5 MB. The workflow never queries OpenStreetMap. |
 | 5 | The algorithms are written from scratch on numpy, short and readable, one test file each. | They are what the project shows. |
-| 6 | Collection runs on GitHub Actions every 10 minutes and the site is GitHub Pages. | Free, no server to keep alive. A capture takes about 1 minute and a run about 7, so the site updates about every 10 minutes. |
+| 6 | Collection runs on GitHub Actions and the site is GitHub Pages. | Free, no server to keep alive. A run takes about 7 minutes and starts the next one whatever its outcome, so the site updates about that often. A 5-minute cron and an external trigger revive a chain whose runner died. |
 | 7 | The public site includes the captured tiles. Every capture is also archived to a private Hugging Face dataset. | Owner's decision. Google's terms forbid storing and republishing tiles; GitHub could take the site down. |
 
 ## 2. Layout
@@ -53,7 +53,7 @@ visualizer/
   server.py                   dev server: UI, tiles, model, graph, layers
   model.py, graph_data.py     the model and graph as versioned vector payloads
   build_site.py               the static site for GitHub Pages
-  static/index.html, app.js, style.css
+  static/index.html, style.css, js/   the page and its ES modules
 ```
 
 ## 3. File contracts
@@ -95,7 +95,7 @@ manifest changes.
 | Algorithms | A*, Dijkstra, BPR, gravity demand, assignment, K-means, KNN, logistic regression, tests | done |
 | Map layers | one layer per algorithm, listed with a description, legend and numbers | done |
 | Visualizer | captures as tiles, the model, the road graph, layers, live weight tuning, reliability suite | done |
-| Scheduled collection | GitHub Actions every 10 minutes, Hugging Face archive, GitHub Pages deploy, live update in the page | done |
+| Scheduled collection | GitHub Actions, self-restarting chain, Hugging Face archive, GitHub Pages deploy, live update in the page | done |
 | Models across time | K-means scenarios over many captures, KNN against logistic regression per time of day | not started; the workflow now produces the captures |
 | Engine and demo | before and after assignment layers exist; the animated run and personal A-to-B routing are not built | partly |
 
@@ -107,7 +107,7 @@ manifest changes.
 | Tile URL format changes | validation rejects rise, coverage drops | the URL lives only in `fetch.py` |
 | Google restyles the palette | `palette_match` below 80 % | update `config.json`, `palette.py` and `server.py`, then `reaudit.py` |
 | GitHub removes the site for republishing tiles | site gone | keep only derived data on the site: drop the tiles from `build_site.py` |
-| Scheduled workflows are delayed at busy times and disabled after 60 days without a commit | gaps in captures | commit occasionally; run manually from Actions |
+| GitHub's schedule is delayed or dropped, and disabled after 60 days without a commit | gaps in captures | the chain does not rely on it: every run starts the next whatever its outcome, a 5-minute cron revives a chain whose runner died, and an external trigger covers the cron itself not firing |
 
 ## 6. Run
 
@@ -115,5 +115,5 @@ manifest changes.
 cd data-collection && python collector/capture.py --name my-capture
 cd ../algorithms   && python pipeline.py --capture ../data-collection/captures/my-capture
 cd ../visualizer   && python server.py                      # http://127.0.0.1:8765
-python build_site.py --out ../site --keep 3                 # the static site
+python build_site.py --out ../site --keep 12                # the static site
 ```

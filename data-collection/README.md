@@ -38,7 +38,8 @@ captures/            not committed, and normally empty: a capture is archived an
 ```
 
 The scheduled capture is the GitHub Actions workflow in
-`.github/workflows/collect.yml`, every 10 minutes. See the root README.
+`.github/workflows/collect.yml`. Each run starts the next as it finishes, so
+captures arrive about every 7 minutes. See the root README.
 
 ## What a capture contains
 

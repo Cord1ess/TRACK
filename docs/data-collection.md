@@ -42,7 +42,8 @@ road on the map and turns the colour it finds into a number.
 ## How often
 
 A GitHub Actions workflow (`.github/workflows/collect.yml`) runs a capture
-every 10 minutes, all day. Each finished capture is archived to a private
+about every 7 minutes, all day: each run starts the next as it finishes.
+Each finished capture is archived to a private
 Hugging Face dataset and the website is updated with the new data.
 
 ## Things to know
