@@ -5,9 +5,10 @@
 # One-time setup: Settings -> Pages -> Build and deployment -> Source: GitHub
 # Actions. The workflow token cannot turn Pages on by itself.
 #
-# Data, in order of preference: the captures kept in the Actions cache by the
-# last collection run; the newest captures in the Hugging Face archive when the
-# cache is empty and the secrets are set; otherwise the road graph alone.
+# Data comes from the Hugging Face archive, which is where captures live. The
+# site built by the last collection run is restored from the cache so tiles it
+# already holds are not copied again. Without the archive secrets the site is
+# published with the road graph alone.
 
 name: deploy
 
@@ -53,17 +54,18 @@ jobs:
       - name: Install
         run: pip install -r data-collection/requirements.txt -r algorithms/requirements.txt
 
-      - name: Restore the captures and site kept by the last collection run
+      # collect.yml caches the site under site-<run id>; restore-keys finds the
+      # most recent. It no longer caches the captures, so there is nothing to
+      # restore for those: the archive is their only source.
+      - name: Restore the site built by the last collection run
         uses: actions/cache/restore@v4
         with:
-          path: |
-            data-collection/captures
-            site
-          key: captures-none
-          restore-keys: captures-
+          path: site
+          key: site-none
+          restore-keys: site-
 
-      # The archive is where captures live; the cache above is only a shortcut.
-      # download.py skips whatever the cache already provided.
+      # The archive is the only source of captures. download.py skips any that
+      # are already on disk, which on a fresh runner is none of them.
       - name: Fetch the newest captures from the archive
         if: env.HF_TOKEN != ''
         working-directory: data-collection

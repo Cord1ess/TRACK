@@ -49,10 +49,10 @@ permissions:
   actions: write                         # a finished run starts the next one
 
 env:
-  KEEP: 12                               # captures kept on the site and between runs.
-                                         # 12 at ~38 MB of tiles each is about 450 MB,
-                                         # inside the 1 GB Pages limit, and gives the
-                                         # timeline two hours of sequence to play through.
+  KEEP: 12                               # captures fetched from the archive and kept
+                                         # on the site. About 325 MB of tiles, inside the
+                                         # 1 GB Pages limit, and roughly 90 minutes of
+                                         # sequence for the timeline to play through.
   HF_TOKEN: ${{ secrets.HF_TOKEN }}
   HF_REPO: ${{ secrets.HF_REPO }}
   # Optional: a URL that is pinged after every successful capture. The service
