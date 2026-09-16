@@ -54,15 +54,8 @@ jobs:
       - name: Install
         run: pip install -r data-collection/requirements.txt -r algorithms/requirements.txt
 
-      # collect.yml caches the site under site-<run id>; restore-keys finds the
-      # most recent. It no longer caches the captures, so there is nothing to
-      # restore for those: the archive is their only source.
-      - name: Restore the site built by the last collection run
-        uses: actions/cache/restore@v4
-        with:
-          path: site
-          key: site-none
-          restore-keys: site-
+      # No Actions cache: see collect.yml. The site is rebuilt from the
+      # captures fetched below, which arrive with their tile pyramids built.
 
       # The archive is the only source of captures. download.py skips any that
       # are already on disk, which on a fresh runner is none of them.

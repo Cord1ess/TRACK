@@ -82,21 +82,15 @@ jobs:
       - name: Install
         run: pip install -r data-collection/requirements.txt -r algorithms/requirements.txt
 
-      # Only the built site is cached, and only so a rebuild reuses the tiles
-      # of captures it already has. The captures themselves come from the
-      # archive, which is authoritative and arrives with the tile pyramids
-      # already built.
+      # NO ACTIONS CACHE. Measured: the site is 526 MB, and a new cache entry
+      # every 7.5 minutes writes about 101 GB a day against a 10 GB repository
+      # cap. The cap is reached in under three hours and then LRU thrashes for
+      # the rest of the run, which is a failure mode in itself over two weeks.
       #
-      # The key is the run id so each save is a new entry; restore-keys finds
-      # the most recent. Caching the captures too put 95 entries and 9.08 GB
-      # against a 10 GB repository limit, so LRU was evicting entries within
-      # the hour and the newest was at risk of going with them.
-      - name: Restore the site built by the last run
-        uses: actions/cache/restore@v4
-        with:
-          path: site
-          key: site-${{ github.run_id }}
-          restore-keys: site-
+      # What it bought: build_site.py skipping tiles for captures already on
+      # the site, measured at 139 s of copying per cold build. Two minutes a
+      # run is not worth a guaranteed storage failure, and every capture is
+      # fetched from the archive anyway, arriving with its pyramids built.
 
       # The captures live in the archive now, not on disk. The Actions cache is
       # a shortcut, not the source: when it is cold, or a key has been evicted,
@@ -157,13 +151,6 @@ jobs:
         working-directory: data-collection
         continue-on-error: true
         run: python storage/upload.py "captures/${{ steps.capture.outputs.name }}"
-
-      - name: Keep the site for the next run
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: site
-          key: site-${{ github.run_id }}
 
       - uses: actions/configure-pages@v5
 
