@@ -51,7 +51,7 @@ import analyze
 import checks
 import grid
 import tiles as tiles_mod
-from fetch import Limiter, fetch
+from fetch import BlockWatch, Blocked, Limiter, fetch
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -124,24 +124,45 @@ def has_traffic(data: bytes, cfg: dict) -> bool:
                                     cfg["palette"], cfg["palette_tolerance"])["traffic_frac"] > 0
 
 
-def sweep(targets, cfg, limiter, stats, log, label):
+def sweep(targets, cfg, limiter, stats, log, label, watch=None):
     """Download a list of tiles using several workers at once.
 
     The workers share one rate limiter, so adding workers does not speed the
     run past what we said we would ask of Google. Returns only the tiles that
     arrived and passed their checks; the caller decides what to do about the
-    rest."""
-    got, done = {}, 0
+    rest.
+
+    They also share one BlockWatch. If the server starts refusing us, the
+    first worker to notice raises Blocked, and the sweep stops with whatever
+    it has rather than sending the rest of the grid at a server saying no."""
+    got, done, blocked = {}, 0, None
     with ThreadPoolExecutor(max_workers=cfg["workers"]) as ex:
         futs = [ex.submit(fetch, cfg["zoom"], x, y, limiter, stats, cfg["tile_px"],
-                          cfg["incidents"], cfg["retries"]) for (x, y) in targets]
+                          cfg["incidents"], cfg["retries"], watch=watch)
+                for (x, y) in targets]
         for f in futs:
-            (x, y), data, _ = f.result()
+            try:
+                (x, y), data, _ = f.result()
+            except Blocked as e:
+                # Stop handing out work. Futures already running finish; the
+                # ones not yet started are cancelled, so the grid is not sent
+                # at a server that is refusing it.
+                if blocked is None:
+                    blocked = e
+                    for other in futs:
+                        other.cancel()
+                continue
+            except Exception as e:                    # a worker died unexpectedly
+                stats[f"worker_{type(e).__name__}"] += 1
+                continue
             done += 1
             if data:
                 got[(x, y)] = data
             if done % 500 == 0:
                 log(f"[{label}] {done}/{len(targets)} ({len(got)} valid)")
+    if blocked:
+        log(f"[{label}] stopped: {blocked}")
+        raise blocked
     return got
 
 
@@ -176,14 +197,28 @@ def run(cfg: dict, name: str, out_root: Path, log: Log, series: str = "test") ->
         f"series={series}, incidents={cfg['incidents']}, fill_gaps={cfg['fill_gaps']}")
 
     limiter, stats = Limiter(cfg["rate"]), Counter()
+    watch = BlockWatch()
     t_fetch = time.time()
-    with stage("sweep"):
-        tiles = sweep(expected, cfg, limiter, stats, log, "sweep")
-    missing = [t for t in expected if t not in tiles]
-    if missing:
-        log(f"[retry] {len(missing)} tiles failed validation; fetching again")
-        with stage("retry"):
-            tiles.update(sweep(missing, cfg, limiter, stats, log, "retry"))
+    # A block ends the capture here rather than at the coverage check. There is
+    # no rate that works while the server is refusing us, so the run gives up,
+    # says so, and the next one tries later on a different runner address.
+    try:
+        with stage("sweep"):
+            tiles = sweep(expected, cfg, limiter, stats, log, "sweep", watch)
+        missing = [t for t in expected if t not in tiles]
+        if missing:
+            log(f"[retry] {len(missing)} tiles failed validation; fetching again")
+            with stage("retry"):
+                tiles.update(sweep(missing, cfg, limiter, stats, log, "retry", watch))
+    except Blocked as e:
+        manifest["note"] = f"blocked by the server: {e}"
+        manifest["status"] = "blocked"
+        manifest["http_status"] = {k: v for k, v in stats.items() if k.startswith("http_")}
+        log(f"[capture] {name}: BLOCKED - {e}")
+        log("[capture] stopping rather than retrying; the next run tries from a new address")
+        (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
+        (out_dir / "log.txt").write_text("\n".join(log.lines), encoding="utf-8")
+        return out_dir, manifest
     unrecoverable = [t for t in expected if t not in tiles]
 
     gaps_filled = 0
@@ -195,7 +230,16 @@ def run(cfg: dict, name: str, out_root: Path, log: Log, series: str = "test") ->
         if suspects:
             log(f"[gapfill] re-fetching {len(suspects)} empty tiles ringed by traffic")
             with stage("gapfill fetch"):
-                for t, d in sweep(suspects, cfg, limiter, stats, log, "gapfill").items():
+                # Every expected tile is already downloaded and verified by
+                # now; this only looks for ones that arrived blank by accident.
+                # So a block here costs the extra, not the capture: keep what
+                # we have rather than throwing away 4,928 good tiles.
+                try:
+                    filled = sweep(suspects, cfg, limiter, stats, log, "gapfill", watch)
+                except Blocked as e:
+                    log(f"[gapfill] skipped: {e}")
+                    filled = {}
+                for t, d in filled.items():
                     if has_traffic(d, cfg):
                         tiles[t] = d
                         gaps_filled += 1

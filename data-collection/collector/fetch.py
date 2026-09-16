@@ -31,6 +31,43 @@ HEADERS = {"User-Agent": UA, "Referer": "https://www.google.com/maps/",
            "Accept": "image/png,image/*,*/*"}
 RETRY_STATUS = (429, 500, 502, 503, 504)
 SLOW_STATUS = (429, 503)                 # the server is asking for less: halve the rate
+BLOCK_STATUS = (403,)                    # the server is refusing us, not throttling us
+
+# A block is the one failure where trying harder makes things worse. When this
+# many tiles in a row come back blocked, the sweep stops rather than putting
+# the rest of the grid into a server that is already refusing. Chosen low: a
+# real block hits every tile, so a handful is enough to recognise it, while a
+# stray 403 among thousands of good tiles never reaches the count.
+BLOCK_STREAK = 25
+
+
+class Blocked(Exception):
+    """Raised when the server is refusing us rather than throttling us.
+
+    Different from a slow-down: there is no rate at which a block succeeds, so
+    the capture ends and the next run tries later with a fresh runner address."""
+
+
+class BlockWatch:
+    """Counts consecutive blocked responses across every worker.
+
+    Any success resets it, so this only fires when the server is refusing
+    more or less everything."""
+
+    def __init__(self, limit: int = BLOCK_STREAK):
+        self.limit = limit
+        self.streak = 0
+        self.lock = threading.Lock()
+
+    def ok(self) -> None:
+        with self.lock:
+            self.streak = 0
+
+    def blocked(self) -> bool:
+        """Record a block; True once the streak says we are being refused."""
+        with self.lock:
+            self.streak += 1
+            return self.streak >= self.limit
 
 # Layer group: 1e2 = traffic overlay, 2straffic, 3i999999 = latest data.
 # The 2mN prefix must equal the number of !-elements that follow, or the
@@ -133,13 +170,16 @@ def validate_tile(data: bytes, tile_px: int) -> tuple[bool, str]:
 
 
 def fetch(z: int, x: int, y: int, limiter: Limiter, stats, tile_px: int,
-          incidents: bool = False, retries: int = 4, timeout: int = 30):
+          incidents: bool = False, retries: int = 4, timeout: int = 30,
+          watch: "BlockWatch | None" = None):
     """Download one tile. Returns its position, the image, and why if there is
     no image.
 
     Tries again on a server error, a network failure, or an image that does
     not pass validation, waiting longer between each attempt. If the server
-    says it is too busy, the whole run slows down, not just this tile."""
+    says it is too busy, the whole run slows down, not just this tile. If the
+    server is refusing us outright, raises Blocked so the sweep can stop
+    instead of hammering it."""
     path = traffic_url(z, x, y, incidents)[len(f"https://{HOST}"):]
     last = "unknown"
     for attempt in range(retries + 1):
@@ -158,6 +198,8 @@ def fetch(z: int, x: int, y: int, limiter: Limiter, stats, tile_px: int,
             if status == 200:
                 ok, reason = validate_tile(data, tile_px)
                 if ok:
+                    if watch:
+                        watch.ok()
                     if attempt:
                         stats["recovered_after_retry"] += 1
                     return (x, y), data, "ok"
@@ -175,6 +217,15 @@ def fetch(z: int, x: int, y: int, limiter: Limiter, stats, tile_px: int,
                 # server-side close raises ConnectionResetError, and a fresh
                 # connection recovers.
                 _drop_connection()
+                if status in BLOCK_STATUS:
+                    # Being refused is not being throttled. Retrying a block,
+                    # or carrying on through the rest of the grid, is the one
+                    # response that makes it worse: it was costing four
+                    # minutes of full-rate requests into a server already
+                    # saying no.
+                    if watch and watch.blocked():
+                        raise Blocked(f"{status} on {watch.limit} tiles in a row")
+                    return (x, y), None, last
                 if status in SLOW_STATUS:
                     stats["slow_downs"] += 1
                     limiter.slow_down()
