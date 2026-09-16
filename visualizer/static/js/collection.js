@@ -198,7 +198,10 @@ export function render() {
   $("collectDetail").textContent = info.detail;
   el.title = `${info.title} — ${info.detail}`;
   const link = $("collectLink");
-  if (link) link.href = m.runs_url || "#";
+  if (link) {
+    link.href = m.runs_url || "#";
+    link.hidden = !m.runs_url;
+  }
 }
 
 /* The bar counts up between polls: a two-minute gap with a frozen number

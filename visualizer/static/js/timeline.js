@@ -12,7 +12,7 @@
    apart they were. */
 
 import { $, clamp, state } from "./core.js";
-import { selectCapture, setCapturesChangedHook } from "./captures.js";
+import { fillCaptureSelect, selectCapture, setCapturesChangedHook } from "./captures.js";
 
 const SLOT_MS = 15 * 60 * 1000;
 const DHAKA_OFFSET = 6 * 3600 * 1000;          // captures are stamped UTC, Dhaka is UTC+6
@@ -185,6 +185,7 @@ export function setSeries(series) {
   tl.series = series;
   document.querySelectorAll("#series button")
     .forEach((b) => b.classList.toggle("on", b.dataset.series === series));
+  fillCaptureSelect();          // the picker follows the timeline
   buildTimeline();
 }
 

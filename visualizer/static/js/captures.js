@@ -12,30 +12,47 @@ import { fitCapture, syncTrafficTiles } from "./basemap.js";
 export const newestCapture = (list) => list.reduce((a, b) =>
   (Date.parse(b.captured_utc) || 0) > (Date.parse(a.captured_utc) || 0) ? b : a);
 
+/* The newest capture in the timeline now showing, or nothing if that series
+   is empty. The picker lists one series, so "go to the newest" has to mean
+   the newest of those, not the newest overall. */
+export function newestInSeries() {
+  const series = state.timeline.series;
+  const mine = state.captures.filter((c) => (c.series || "test") === series);
+  return mine.length ? newestCapture(mine) : null;
+}
+
 /* The timeline owns the track; it hands us a rebuild function rather than us
    importing it, so captures.js and timeline.js do not depend on each other. */
 let onCapturesChanged = () => {};
 export function setCapturesChangedHook(fn) { onCapturesChanged = fn; }
 
+/* The picker lists the captures the timeline is showing, newest first, and
+   names them by time rather than by folder. Listing every capture regardless
+   of series meant the picker and the track disagreed about what existed. */
 export function fillCaptureSelect() {
   const sel = $("capture");
   const current = sel.value;
+  const series = state.timeline.series;
+  const mine = state.captures
+    .filter((c) => (c.series || "test") === series)
+    .sort((a, b) => Date.parse(b.captured_utc) - Date.parse(a.captured_utc));
   sel.innerHTML = "";
-  if (!state.captures.length) {
+  if (!mine.length) {
     const o = document.createElement("option");
     o.value = "";
-    o.textContent = "no capture yet";
+    o.textContent = series === "scheduled" ? "no scheduled capture yet" : "no test capture";
     o.disabled = o.selected = true;
     sel.appendChild(o);
     return;
   }
-  for (const c of state.captures) {
+  for (const c of mine) {
     const o = document.createElement("option");
     o.value = c.name;
-    o.textContent = c.name;
+    const t = c.captured_utc || "";
+    o.textContent = `${t.slice(5, 10)} ${t.slice(11, 16)} UTC`;
     sel.appendChild(o);
   }
-  if (state.captures.some((c) => c.name === current)) sel.value = current;
+  if (mine.some((c) => c.name === current)) sel.value = current;
 }
 
 export function selectCapture(name, fit) {
@@ -59,10 +76,14 @@ export async function loadCaptures() {
   try { state.captures = await apiJson("/api/captures"); } catch { state.captures = []; }
   if (!Array.isArray(state.captures)) state.captures = [];
   fillCaptureSelect();
-  if (state.captures.length) {
-    const newest = newestCapture(state.captures);
+  const newest = newestInSeries();
+  if (newest) {
     $("capture").value = newest.name;
     selectCapture(newest.name, true);
+  } else if (state.captures.length) {
+    // nothing in the timeline showing, but there is data: show it rather than
+    // an empty map, and the timeline switch will say where it lives
+    selectCapture(newestCapture(state.captures).name, true);
   }
   renderCollection();
 }
@@ -73,13 +94,13 @@ export async function refreshCaptures() {
   if (!Array.isArray(list)) return;
   const names = (l) => l.map((c) => c.name).join("|");
   if (names(list) === names(state.captures)) { renderCollection(); return; }
-  const onNewest = !state.capture || !state.captures.length
-    || state.capture.name === newestCapture(state.captures).name;
+  const was = newestInSeries();
+  const onNewest = !state.capture || !was || state.capture.name === was.name;
   state.captures = list;
   fillCaptureSelect();
   onCapturesChanged();
-  if (list.length && onNewest) {
-    const newest = newestCapture(list);
+  const newest = newestInSeries();
+  if (newest && onNewest) {
     $("capture").value = newest.name;
     selectCapture(newest.name, false);
   }

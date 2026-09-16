@@ -28,7 +28,10 @@ permissions:
   actions: write                         # a finished run starts the next one
 
 env:
-  KEEP: 3                                # captures kept on the site and between runs
+  KEEP: 12                               # captures kept on the site and between runs.
+                                         # 12 at ~38 MB of tiles each is about 450 MB,
+                                         # inside the 1 GB Pages limit, and gives the
+                                         # timeline two hours of sequence to play through.
   HF_TOKEN: ${{ secrets.HF_TOKEN }}
   HF_REPO: ${{ secrets.HF_REPO }}
 
@@ -89,9 +92,13 @@ jobs:
       - name: Build the site
         run: python visualizer/build_site.py --out site --keep "$KEEP" --prune
 
+      # The site must publish whether or not the archive accepts the capture.
+      # Run #98 failed here on an expired token and skipped deploy, upload and
+      # the self-restart with it: one credential took the whole chain down.
       - name: Archive the capture to Hugging Face
         if: env.HF_TOKEN != ''
         working-directory: data-collection
+        continue-on-error: true
         run: python storage/upload.py "captures/${{ steps.capture.outputs.name }}"
 
       - name: Keep the captures and site for the next run

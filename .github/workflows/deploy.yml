@@ -30,7 +30,7 @@ permissions:
   id-token: write
 
 env:
-  KEEP: 3
+  KEEP: 12
   HF_TOKEN: ${{ secrets.HF_TOKEN }}
   HF_REPO: ${{ secrets.HF_REPO }}
 
