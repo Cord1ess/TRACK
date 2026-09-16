@@ -1,20 +1,22 @@
 /* The week track along the bottom, and the two timelines it can show.
 
    A capture belongs to one of two series. `scheduled` is the unbroken run the
-   collection workflow takes every 10 minutes, which is what the research
-   rests on. `test` is everything taken by hand. They are shown separately so
-   a test never reads as a spike in the real sequence, and so a gap in the
-   scheduled run is visible as exactly that.
+   collection workflow takes; `test` is everything taken by hand. They are
+   shown separately so a test never reads as a spike in the real sequence, and
+   so a gap in the scheduled run is visible as exactly that.
 
-   Play walks the captures, not the clock. Stepping through 672 slots to find
-   the handful that hold data made the button look broken on a sparse
-   timeline; now it hops capture to capture, and the readout says how far
-   apart they were. */
+   The track indexes CAPTURES, not clock slots. It used to quantise the week
+   into 672 fifteen-minute slots, which worked while captures were 20 minutes
+   apart and broke the moment they were not: at one capture every 6 minutes,
+   twelve of them collapsed into five slots, seven were unreachable, and play
+   froze because stepping from a slot landed back on the same slot. Now every
+   capture is its own stop and its position on the track comes from its
+   timestamp, so two captures four minutes apart are still two places to be. */
 
 import { $, clamp, state } from "./core.js";
 import { fillCaptureSelect, selectCapture, setCapturesChangedHook } from "./captures.js";
 
-const SLOT_MS = 15 * 60 * 1000;
+const WEEK_MS = 7 * 24 * 3600 * 1000;
 const DHAKA_OFFSET = 6 * 3600 * 1000;          // captures are stamped UTC, Dhaka is UTC+6
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const STEP_MS = 900;                           // one capture per this long at 1x
@@ -38,33 +40,25 @@ export function buildTimeline() {
   const monday = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - dow * 86400000;
   tl.start = monday - DHAKA_OFFSET;
 
-  tl.available.clear();
-  tl.order = [];
+  // one stop per capture that falls inside the week, in time order
+  tl.stops = [];
   tl.outside = 0;
   for (const c of mine) {
-    const idx = Math.round((Date.parse(c.captured_utc) - tl.start) / SLOT_MS);
-    if (idx >= 0 && idx < tl.slots) {
-      tl.available.set(idx, c.name);
-      tl.order.push(idx);
-    } else {
-      // the track covers the week around this series' newest capture, so
-      // anything older than that week has nowhere to sit. Counted, not
-      // dropped silently: the readout says how many are out of view.
-      tl.outside += 1;
-    }
+    const t = Date.parse(c.captured_utc);
+    const at = (t - tl.start) / WEEK_MS;        // 0..1 across the track
+    if (at >= 0 && at < 1) tl.stops.push({ name: c.name, t, at });
+    else tl.outside += 1;                       // older than the week the track draws
   }
-  tl.order.sort((a, b) => a - b);
 
-  // stay on the capture already showing if it is in this series, else go to
-  // the newest one, else leave the head where the data would start
-  const here = tl.order.find((i) => tl.available.get(i) === (state.capture && state.capture.name));
-  tl.index = here ?? (tl.order.length ? tl.order[tl.order.length - 1] : 0);
+  // stay on the capture already showing if it is in this series, else the newest
+  const here = tl.stops.findIndex((s) => s.name === (state.capture && state.capture.name));
+  tl.index = here >= 0 ? here : Math.max(0, tl.stops.length - 1);
 
   renderTrack();
   renderTimeline();
-  if (tl.order.length && here === undefined) {
-    const name = tl.available.get(tl.index);
-    if (name && name !== (state.capture && state.capture.name)) selectCapture(name, false);
+  if (tl.stops.length && here < 0) {
+    const name = tl.stops[tl.index].name;
+    if (name !== (state.capture && state.capture.name)) selectCapture(name, false);
   }
 }
 
@@ -74,64 +68,56 @@ function renderTrack() {
   const tl = state.timeline;
   $("trackDays").innerHTML = DAYS.map((x) => `<div>${x}</div>`).join("");
 
-  const pct = (i) => (i / (tl.slots - 1)) * 100;
-  const gaps = gapSlots();
-  $("trackMarks").innerHTML = tl.order
-    .map((i) => `<i class="${gaps.has(i) ? "gap" : ""}" style="left:${pct(i)}%"></i>`)
+  const gaps = gapStops();
+  $("trackMarks").innerHTML = tl.stops
+    .map((s, i) => `<i class="${gaps.has(i) ? "gap" : ""}" style="left:${s.at * 100}%"></i>`)
     .join("");
 
   const span = $("trackSpan");
-  if (tl.order.length > 1) {
-    const a = pct(tl.order[0]);
+  if (tl.stops.length > 1) {
+    const a = tl.stops[0].at * 100;
     span.style.left = `${a}%`;
-    span.style.width = `${pct(tl.order[tl.order.length - 1]) - a}%`;
+    span.style.width = `${tl.stops[tl.stops.length - 1].at * 100 - a}%`;
     span.hidden = false;
   } else {
     span.hidden = true;
   }
 }
 
-/* Slots where the scheduled sequence skipped a beat. Only meaningful for the
+/* Stops where the scheduled sequence skipped a beat. Only meaningful for the
    scheduled series: captures taken by hand are not supposed to be regular. */
-function gapSlots() {
+function gapStops() {
   const tl = state.timeline;
   const out = new Set();
   if (tl.series !== "scheduled") return out;
-  for (let k = 1; k < tl.order.length; k++) {
-    const minutes = (tl.order[k] - tl.order[k - 1]) * (SLOT_MS / 60000);
-    if (minutes > SCHEDULED_GAP_MIN) out.add(tl.order[k]);
+  for (let k = 1; k < tl.stops.length; k++) {
+    if ((tl.stops[k].t - tl.stops[k - 1].t) / 60000 > SCHEDULED_GAP_MIN) out.add(k);
   }
   return out;
 }
 
-export function slotDate(i) {
-  return new Date(state.timeline.start + i * SLOT_MS + DHAKA_OFFSET);
-}
-
 export function renderTimeline() {
   const tl = state.timeline;
-  $("trackHead").style.left = `${(tl.index / (tl.slots - 1)) * 100}%`;
-  const d = slotDate(tl.index);
+  const stop = tl.stops[tl.index];
+  $("trackHead").style.left = `${(stop ? stop.at : 0) * 100}%`;
+
+  const d = new Date((stop ? stop.t : tl.start) + DHAKA_OFFSET);
   const hh = String(d.getUTCHours()).padStart(2, "0");
   const mm = String(d.getUTCMinutes()).padStart(2, "0");
   $("slotLabel").textContent = `${DAYS[(d.getUTCDay() + 6) % 7]} ${d.getUTCDate()} · ${hh}:${mm}`;
 
   document.querySelectorAll("#trackMarks i").forEach((el, n) => {
-    el.classList.toggle("here", tl.order[n] === tl.index);
+    el.classList.toggle("here", n === tl.index);
   });
 
   const st = $("slotState");
-  const n = tl.order.length;
-  if (tl.available.has(tl.index)) {
-    const at = tl.order.indexOf(tl.index) + 1;
-    st.textContent = `capture ${at} of ${n}`;
-    st.className = "live";
-  } else if (!n) {
+  const n = tl.stops.length;
+  if (!n) {
     st.textContent = tl.series === "scheduled" ? "no scheduled captures yet" : "no test captures";
     st.className = "";
   } else {
-    st.textContent = `${n} capture${n === 1 ? "" : "s"} in this timeline`;
-    st.className = "";
+    st.textContent = `capture ${tl.index + 1} of ${n}`;
+    st.className = "live";
   }
 
   const count = $("seriesCount");
@@ -139,42 +125,42 @@ export function renderTimeline() {
     const other = tl.series === "scheduled" ? "test" : "scheduled";
     const mine = seriesCaptures().length;
     const theirs = seriesCaptures(other).length;
-    // `mine` counts the series; tl.order counts what fits on this week's
-    // track. Saying only one of them would be a number that does not match
-    // the marks under it.
-    const shown = tl.outside
-      ? `${tl.order.length} of ${mine} ${tl.series} this week`
-      : `${mine} ${tl.series}`;
+    // `mine` counts the series; stops counts what fits on this week's track.
+    // Saying only one of them would be a number that does not match the marks.
+    const shown = tl.outside ? `${n} of ${mine} ${tl.series} this week` : `${mine} ${tl.series}`;
     count.textContent = `${shown}${theirs ? ` · ${theirs} ${other}` : ""}`;
   }
 }
 
-/* Move the head. `snap` lands on the nearest capture instead of the raw slot,
-   which is what dragging wants: the slots between captures hold nothing. */
-export function setSlot(i, fromUser, snap = false) {
+/** Go to a stop by its position in the list. */
+export function setStop(i, fromUser) {
   const tl = state.timeline;
-  if (!Number.isFinite(i)) return;
-  let target = clamp(Math.round(i), 0, tl.slots - 1);
-  if (snap && tl.order.length) {
-    target = tl.order.reduce((best, s) =>
-      Math.abs(s - target) < Math.abs(best - target) ? s : best, tl.order[0]);
-  }
-  tl.index = target;
-  const name = tl.available.get(tl.index);
-  if (name && name !== (state.capture && state.capture.name)) selectCapture(name, false);
+  if (!tl.stops.length || !Number.isFinite(i)) return;
+  tl.index = clamp(Math.round(i), 0, tl.stops.length - 1);
+  const name = tl.stops[tl.index].name;
+  if (name !== (state.capture && state.capture.name)) selectCapture(name, false);
   renderTimeline();
   if (fromUser && tl.playing) stopPlay();
+}
+
+/** Go to whichever capture sits nearest a fraction across the week. Dragging
+    wants this: the space between captures holds nothing to show. */
+export function setAt(fraction, fromUser) {
+  const tl = state.timeline;
+  if (!tl.stops.length || !Number.isFinite(fraction)) return;
+  const f = clamp(fraction, 0, 1);
+  let best = 0;
+  for (let i = 1; i < tl.stops.length; i++) {
+    if (Math.abs(tl.stops[i].at - f) < Math.abs(tl.stops[best].at - f)) best = i;
+  }
+  setStop(best, fromUser);
 }
 
 /** Step to the next or previous capture, wrapping at the ends. */
 export function stepCapture(dir) {
   const tl = state.timeline;
-  if (!tl.order.length) return;
-  const at = tl.order.indexOf(tl.index);
-  const next = at < 0
-    ? (dir > 0 ? tl.order[0] : tl.order[tl.order.length - 1])
-    : tl.order[(at + dir + tl.order.length) % tl.order.length];
-  setSlot(next, false);
+  if (!tl.stops.length) return;
+  setStop((tl.index + dir + tl.stops.length) % tl.stops.length, false);
 }
 
 export function setSeries(series) {
@@ -199,7 +185,7 @@ export function setSpeed(mult) {
 
 export function startPlay() {
   const tl = state.timeline;
-  if (tl.playing || tl.order.length < 2) return;
+  if (tl.playing || tl.stops.length < 2) return;
   tl.playing = true;
   $("playIcon").innerHTML = '<path d="M4.5 3h2.6v10H4.5zM8.9 3h2.6v10H8.9z" fill="currentColor"/>';
   $("playBtn").title = "Pause (space)";
@@ -218,22 +204,18 @@ export const togglePlay = () => (state.timeline.playing ? stopPlay() : startPlay
 
 export function bindTrack() {
   const track = $("track");
-  const toSlot = (ev, snap) => {
+  const toFraction = (ev) => {
     const r = track.getBoundingClientRect();
-    if (r.width > 0) {
-      setSlot(((ev.clientX - r.left) / r.width) * (state.timeline.slots - 1), true, snap);
-    }
+    return r.width > 0 ? (ev.clientX - r.left) / r.width : null;
   };
   let dragging = false;
   track.addEventListener("pointerdown", (e) => {
     dragging = true;
     try { track.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
-    toSlot(e, true);
+    setAt(toFraction(e), true);
   });
-  // free while dragging so the head follows the finger, snapping when released
-  track.addEventListener("pointermove", (e) => { if (dragging) toSlot(e, false); });
+  track.addEventListener("pointermove", (e) => { if (dragging) setAt(toFraction(e), true); });
   const end = (e) => {
-    if (dragging) toSlot(e, true);
     dragging = false;
     try { track.releasePointerCapture(e.pointerId); } catch (err) { /* already released */ }
   };

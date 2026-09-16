@@ -103,12 +103,16 @@ export const state = {
   weights: { g: 25, o: 55, r: 85, d: 105 }, jam: 4, beta: 4,
   inspect: false, reloading: false, booted: false,
   timeline: {
-    start: null, slots: 672, index: 0, playing: false, timer: null,
+    start: null,           // midnight Monday of the week the track draws, UTC
+    index: 0,              // which stop the head is on
+    playing: false, timer: null, speed: 1,
     series: "scheduled",   // which of the two timelines is showing
-    available: new Map(),  // slot index -> capture name, for the series showing
-    order: [],             // those slot indexes in time order, for stepping
+    // One entry per capture in that series: {name, t, at}, oldest first, where
+    // `at` is 0..1 across the week. Captures are the stops, not clock slots:
+    // quantising to 15 minutes lost seven of twelve captures that arrived six
+    // minutes apart, and left play unable to advance.
+    stops: [],
     outside: 0,            // captures in this series that fall outside the drawn week
-    speed: 1,
   },
 };
 
