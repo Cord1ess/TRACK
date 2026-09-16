@@ -37,19 +37,32 @@ table, and the layer index.
 Two workflows. `deploy.yml` publishes the site on every push that changes the
 app or the algorithms, from the data already collected, so the site is live
 before the first capture. `collect.yml` does one cycle: capture, pipeline,
-build, deploy, and then starts the next run itself, so one manual start keeps
-collection going. Runs never overlap. A capture takes about 1 minute and
-the rest of a run about 6, so new data lands about every 10 minutes. A failed
-capture stops the run and the site keeps its last data; the 10-minute
-schedule restarts the chain, when GitHub honours it. The page shows the
-latest capture and its age, the current run and how long it has been going,
-when the site was built, and links to the run history.
+build, deploy, and then starts the next run whatever happened to this one.
+
+The aim is an unbroken sequence, so four things keep the chain alive: a failed
+capture is retried inside the run, costing about 75 seconds rather than a
+cycle; every run starts its successor even after failing, pausing to the next
+5-minute boundary first so a broken run cannot respawn in a hot loop; GitHub's
+cron ticks every 5 minutes to revive a chain whose runner was killed; and an
+external trigger covers GitHub's cron not firing, which it often does not.
+Runs never overlap, and a trigger arriving mid-run becomes the pending run
+rather than a second one.
+
+A run takes about 7 minutes and starts the next as it ends, so captures arrive
+roughly that often: the chain sets the pace, not the clock. See
+[docs/keeping-collection-alive.md](docs/keeping-collection-alive.md) for the
+external trigger and the heartbeat, which are the two parts you set up by hand.
+
+The page shows the latest capture and its age, the current run with the step it
+is on and an estimate from measured timings, when the site was built, and links
+to the run history.
 
 Setup, once:
 
 1. Settings, Pages, Build and deployment, Source: GitHub Actions.
 2. Optional: repository secrets `HF_TOKEN` and `HF_REPO` archive every capture to a private Hugging Face dataset, and let a fresh deploy start from the newest captures there. Without them that step is skipped.
 3. Actions, deploy, Run workflow, to publish the site. Then Actions, collect, Run workflow, once: each run starts the next.
+4. Optional but recommended for a gap-free run: the external trigger and heartbeat in [docs/keeping-collection-alive.md](docs/keeping-collection-alive.md).
 
 The site keeps the last 3 captures (`KEEP` in the workflow). The page checks
 `data/manifest.json` every 5 seconds and swaps in new data without a reload.

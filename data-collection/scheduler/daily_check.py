@@ -29,10 +29,15 @@ from pathlib import Path
 # perfect day is roughly 144 captures 10 minutes apart. The thresholds below
 # are deliberately loose: they catch "collection has stopped or is badly
 # broken", not a few slow runs.
-MIN_CAPTURES = 72          # half a perfect day; fewer usable captures is a problem
+# The goal is an unbroken sequence: every window has traffic data. A run takes
+# about 7 minutes and starts the next one itself, so captures land roughly that
+# often. A gap of 20 minutes means two cycles were lost and is worth knowing
+# about; 30 means the chain died and was revived by the cron.
+MIN_CAPTURES = 150         # ~206/day at the real cadence; well under a full day
 MAX_BAD = 18               # partial, failed or unreadable captures allowed
-MAX_GAP_MIN = 60           # longest allowed gap between captures
-STALE_AFTER_MIN = 30       # latest.json older than this means the collector stopped
+GAP_WARN_MIN = 20          # a gap this long is reported, run by run
+MAX_GAP_MIN = 30           # a gap this long means the day is not clean
+STALE_AFTER_MIN = 20       # latest.json older than this means the collector stopped
 # Captures carry their tile caches since September 2026, so one is about
 # 18.5 MB rather than 2.9. At 144 a day that is roughly 2.7 GB a day, so the
 # ceiling is weeks away rather than months: the report prints how many.
@@ -48,6 +53,19 @@ def when_of(name: str, manifest: dict | None = None) -> tuple[str | None, str | 
         return t.strftime("%Y-%m-%d"), t.strftime("%H:%M")
     m = WHEN.search(name)
     return (m.group(1), f"{m.group(2)}:{m.group(3)}") if m else (None, None)
+
+
+def gaps_over(times: list[str], limit: int) -> list[str]:
+    """Every gap longer than `limit`, as "HH:MM->HH:MM (N min)".
+
+    The longest gap alone hides a day that broke repeatedly, which is the
+    failure the sequence cannot tolerate."""
+    mins = sorted(int(t[:2]) * 60 + int(t[3:]) for t in times)
+    out = []
+    for a, b in zip(mins, mins[1:]):
+        if b - a > limit:
+            out.append(f"{a // 60:02d}:{a % 60:02d}->{b // 60:02d}:{b % 60:02d} ({b - a} min)")
+    return out
 
 
 def longest_gap_min(times: list[str]) -> int:
@@ -105,7 +123,9 @@ def main() -> int:
 
     usable = counts["ok"] + counts["partial"]
     bad = counts["partial"] + counts["failed"] + counts["unreadable"]
-    gap = longest_gap_min([r[1] for r in rows if r[1] != "??:??"])
+    times = [r[1] for r in rows if r[1] != "??:??"]
+    gap = longest_gap_min(times)
+    notable = gaps_over(times, GAP_WARN_MIN)
     mean_cov = round(cov_sum / max(1, len(rows) - counts["unreadable"]), 2)
 
     latest_age_min, latest_txt = None, "no latest.json"
@@ -151,6 +171,7 @@ def main() -> int:
         f"| ok / partial / failed / unreadable | {counts['ok']} / {counts['partial']} / {counts['failed']} / {counts['unreadable']} |",
         f"| Mean coverage | {mean_cov} % |",
         f"| Longest gap | {gap} min |",
+        f"| Gaps over {GAP_WARN_MIN} min | {len(notable)}{(': ' + ', '.join(notable)) if notable else ''} |",
         f"| Tiles this day | {total_bytes / 1e6:.1f} MB |",
         f"| Dataset | {size_txt} |",
         f"| Collector | {latest_txt} |",

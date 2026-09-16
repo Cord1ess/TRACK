@@ -1,9 +1,21 @@
 # Capture Dhaka's traffic, run the pipeline, update the site on GitHub Pages.
 #
-# Triggers every 10 minutes. A capture takes about 1 minute and a run about
-# 8; the concurrency group keeps runs from overlapping. The road graph is committed (gzipped); the
-# pipeline unpacks it and never queries OpenStreetMap here. A failed capture
-# stops the run, so a bad cycle never deploys and the site keeps its last data.
+# The goal is an unbroken sequence: traffic data for every slot, with no window
+# missing. Four things keep the chain alive, in order of how often they matter:
+#
+#   1. a failed capture is retried inside the run, costing ~75 s not a slot
+#   2. every run starts the next one whatever its outcome (see the last step)
+#   3. GitHub's cron ticks every 5 minutes and revives a chain whose runner died
+#   4. an external trigger posts repository_dispatch when GitHub's cron does not
+#
+# The concurrency group keeps one run going at a time. A trigger arriving
+# mid-run becomes the single pending run, and a later one replaces it, so the
+# triggers can never stack up. In practice the next run starts the moment the
+# current one ends, which is why captures land every ~7 minutes rather than
+# every 10: the chain, not the clock, sets the pace.
+#
+# A run takes about 7 minutes. The road graph is committed (gzipped); the
+# pipeline unpacks it and never queries OpenStreetMap here.
 #
 # deploy.yml publishes the site on every push, so it is live before the first
 # capture; this workflow only refreshes it. Optional: repository secrets
@@ -14,8 +26,17 @@ name: collect
 
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    # Every 5 minutes, which is GitHub's minimum. This is NOT the cadence: the
+    # chain sets that by starting its own successor. The cron exists only to
+    # revive a chain that died without reaching its restart step, which is what
+    # happens if the runner itself is killed. The concurrency group below means
+    # a tick that arrives while a run is going is simply dropped.
+    - cron: "*/5 * * * *"
   workflow_dispatch:
+  # An external trigger (cron-job.org or similar) posts this when GitHub's own
+  # schedule does not fire. Same job, same guard.
+  repository_dispatch:
+    types: [collect]
 
 concurrency:
   group: collect
@@ -34,6 +55,10 @@ env:
                                          # timeline two hours of sequence to play through.
   HF_TOKEN: ${{ secrets.HF_TOKEN }}
   HF_REPO: ${{ secrets.HF_REPO }}
+  # Optional: a URL that is pinged after every successful capture. The service
+  # alerts when the pings stop, which is how a dead chain is noticed in minutes
+  # rather than hours. Unset means the step is skipped.
+  HEARTBEAT_URL: ${{ secrets.HEARTBEAT_URL }}
 
 jobs:
   collect:
@@ -74,13 +99,31 @@ jobs:
         continue-on-error: true            # a cold archive must not stop a capture
         run: python storage/download.py --to captures --latest "$KEEP"
 
+      # A capture that fails is retried here, in the same run, rather than
+      # costing a whole slot. Each attempt takes about 75 s, so three attempts
+      # still fit well inside one 10-minute slot. Each gets its own name,
+      # because the name carries the minute and a retry inside the same minute
+      # would collide with the folder the failed attempt left behind.
       - name: Capture
         id: capture
         working-directory: data-collection
         run: |
-          NAME="dhaka-$(date -u +%Y-%m-%dT%H%MZ)"
-          echo "name=$NAME" >> "$GITHUB_OUTPUT"
-          python collector/capture.py --name "$NAME" --series scheduled
+          set -u
+          for attempt in 1 2 3; do
+            NAME="dhaka-$(date -u +%Y-%m-%dT%H%MZ)"
+            if [ -e "captures/$NAME" ]; then NAME="${NAME%Z}-$attempt Z"; NAME="${NAME// /}"; fi
+            echo "attempt $attempt: $NAME"
+            if python collector/capture.py --name "$NAME" --series scheduled; then
+              echo "name=$NAME" >> "$GITHUB_OUTPUT"
+              echo "attempts=$attempt" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::warning title=capture::attempt $attempt failed"
+            rm -rf "captures/$NAME"
+            sleep 5
+          done
+          echo "::error title=capture::three attempts failed"
+          exit 1
 
       - name: Decode, impute, layers
         working-directory: algorithms
@@ -118,11 +161,41 @@ jobs:
       - id: deploy
         uses: actions/deploy-pages@v4
 
-      # GitHub's schedule is best effort: it did not fire once in the hour
-      # after this file landed. So a finished run starts the next one itself,
-      # and the schedule only has to restart the chain after a failed capture.
+      # Tell the heartbeat this run produced data. Silence is what the alert
+      # watches for, so this must only fire when the capture actually worked.
+      - name: Heartbeat
+        if: success() && env.HEARTBEAT_URL != ''
+        continue-on-error: true
+        run: curl -fsS -m 10 --retry 3 "$HEARTBEAT_URL" || true
+
+      # THE CHAIN. Every run starts the next one, whatever happened to this
+      # one. `always()` rather than `success()` is the whole point: a run that
+      # failed is exactly when the next one matters most. Run #98 failed on an
+      # archive upload and started nothing, and collection was dead for five
+      # hours until someone noticed.
+      #
+      # A failed run waits for the slot boundary before starting its successor.
+      # Without that, a permanently broken run that fails in 20 s would respawn
+      # itself hundreds of times an hour. With it, failure costs the remainder
+      # of the slot and no more, so a broken system retries about six times an
+      # hour and a healthy one is never delayed at all.
+      #
+      # This step is last and runs unconditionally, but a killed runner never
+      # reaches it. That case is what the cron and the external trigger cover.
       - name: Start the next run
-        if: success()
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run collect.yml --ref "${{ github.ref_name }}"
+          OUTCOME: ${{ job.status }}
+        run: |
+          if [ "$OUTCOME" != "success" ]; then
+            # Pace the retry so a run that fails in seconds cannot respawn
+            # itself hundreds of times an hour. Capped at 5 minutes: long
+            # enough to stop a hot loop, short enough that a transient fault
+            # costs one slot and no more. The wait is on a runner, which is
+            # free on a public repository.
+            SECS=$(( 300 - ($(date -u +%s) % 300) ))
+            echo "run ended as $OUTCOME; pacing the retry, waiting ${SECS}s"
+            sleep "$SECS"
+          fi
+          gh workflow run collect.yml --ref "${{ github.ref_name }}"             || echo "::warning title=chain::could not start the next run; cron and the external trigger are the fallback"
