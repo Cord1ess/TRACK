@@ -26,7 +26,9 @@ collector/
   reaudit.py         recompute palette-dependent stats of an existing capture
 storage/             upload.py, download.py and migrate.py: a private Hugging Face dataset
                      is where captures live. Two files per capture (manifest.json and
-                     capture.tar.gz, about 3 MB)
+                     capture.tar.gz, about 18.5 MB: the tiles plus the visualizer's
+                     tile caches, which cost 95 s a capture to rebuild and seconds
+                     to download)
 scheduler/           daily_check.py: health report over the archive
 tests/selftest.py
 captures/            not committed, and normally empty: a capture is archived and the
@@ -65,6 +67,7 @@ workflow stops on a bad capture.
 
 ## Facts
 
+- A capture archives its tile caches rather than rebuilding them. Measured: 18.5 MB stored against 2.9, and a twelve-capture site build drops from about 14 minutes to about 4. At 144 captures a day the archive grows roughly 2.7 GB a day, so the 100 GB tier lasts about five weeks; `scheduler/daily_check.py` prints the remaining headroom every morning.
 - Zoom 18 renders no traffic; 17 is the ceiling. Only 256 px tiles are served.
 - Residential lanes carry no traffic colour at any zoom. Google has no probe data there.
 - Fetching a tile again returns identical bytes, so there is no flicker to recover within a capture. The checks guard against transport failures.

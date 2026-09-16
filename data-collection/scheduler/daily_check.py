@@ -33,6 +33,9 @@ MIN_CAPTURES = 72          # half a perfect day; fewer usable captures is a prob
 MAX_BAD = 18               # partial, failed or unreadable captures allowed
 MAX_GAP_MIN = 60           # longest allowed gap between captures
 STALE_AFTER_MIN = 30       # latest.json older than this means the collector stopped
+# Captures carry their tile caches since September 2026, so one is about
+# 18.5 MB rather than 2.9. At 144 a day that is roughly 2.7 GB a day, so the
+# ceiling is weeks away rather than months: the report prints how many.
 MAX_DATASET_GB = 90.0      # the free private tier is 100 GB
 
 WHEN = re.compile(r"(\d{4}-\d{2}-\d{2})T(\d{2})(\d{2})")
@@ -121,7 +124,10 @@ def main() -> int:
         size_gb = sum((s.size or 0) for s in info.siblings) / 1e9
         days = len({when_of(s.rfilename.split("/")[1])[0] for s in info.siblings
                     if s.rfilename.startswith("captures/")} - {None}) or 1
-        size_txt = f"{size_gb:.2f} GB over {days} day(s); 7-day projection {size_gb / days * 7:.1f} GB"
+        per_day = size_gb / days
+        weeks_left = (MAX_DATASET_GB - size_gb) / (per_day * 7) if per_day > 0 else 999
+        size_txt = (f"{size_gb:.2f} GB over {days} day(s); {per_day:.2f} GB/day; "
+                    f"about {weeks_left:.1f} weeks before {MAX_DATASET_GB:.0f} GB")
     except Exception as e:
         size_txt = f"size unavailable ({type(e).__name__})"
 

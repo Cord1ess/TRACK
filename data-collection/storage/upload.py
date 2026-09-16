@@ -3,12 +3,15 @@
     python storage/upload.py captures/<name> [--dry-run] [--allow-public]
 
 A capture is stored as two files. The manifest goes up on its own, so the
-details of a capture can be read without downloading it. Everything else, the
-five thousand tiles and the audit file and the log, goes into a single
-compressed archive of about 3 MB. Sending one archive instead of five thousand
-separate files is the difference between seconds and many minutes.
+details of a capture can be read without downloading it. Everything else goes
+into a single compressed archive of about 18.5 MB: the five thousand tiles,
+the audit file, the log, and the visualizer's tile caches. Sending one archive
+instead of thirteen thousand separate files is the difference between seconds
+and many minutes.
 
-Anything that can be rebuilt from the tiles is left out.
+The tile caches could be rebuilt from the tiles but are stored anyway, because
+rebuilding costs about 95 seconds a capture and downloading them costs a few.
+See DERIVED below for what is genuinely left out.
 
 Safety: the access token is checked before anything is sent, and the upload is
 refused if the dataset is not private. After sending, the file sizes on the
@@ -28,12 +31,17 @@ import tarfile
 import time
 from pathlib import Path
 
-# Anything that can be rebuilt from the tiles is left out of the archive.
+# The tile caches (_pyramid, _pyramid_clean, _clean) TRAVEL with the capture,
+# even though they can be rebuilt from the tiles. Rebuilding them costs about
+# 95 seconds per capture, and a site build that fetches twelve captures was
+# spending fourteen minutes regenerating what it could have downloaded. The
+# archive is the cheaper place to keep them: 18.5 MB a capture instead of 2.9,
+# measured, against storage that is not the constraint.
+#
 # blocks/ and preview_on_white.png were dropped from the collector in
-# September 2026; they stay listed so re-uploading an older capture folder
-# still skips them.
-DERIVED = {"_pyramid", "_pyramid_clean", "_clean",      # the visualizer's tile caches
-           "blocks", "preview_on_white.png"}            # older captures only
+# September 2026 and are genuinely dead; they stay listed so re-uploading an
+# older capture folder still skips them.
+DERIVED = {"blocks", "preview_on_white.png"}            # older captures only
 KEEP = ("manifest.json", "capture.tar.gz")
 
 
