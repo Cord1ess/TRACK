@@ -57,12 +57,29 @@ def main() -> int:
     if args.name:
         want = [args.name] if args.name in names else []
     else:
-        dated = []
-        for n in names:                                   # newest by capture time
+        # Sort by NAME, not by downloading every manifest. A capture is called
+        # dhaka-<ISO timestamp>Z, so the name sorts chronologically on its own.
+        #
+        # Reading each manifest meant one HTTP round trip per capture in the
+        # archive, just to sort and keep 12. At 1,237 captures that step had
+        # grown from 45 s to over 300 s and was the largest in the run, getting
+        # worse every cycle. Only the few we actually want are checked.
+        want = []
+        for n in sorted((x for x in names if x.startswith("dhaka-")), reverse=True):
+            if len(want) >= args.latest:
+                break
             m = manifest_of(n)
             if m and m.get("status") in ("ok", "partial"):
-                dated.append((m.get("captured_utc", ""), n))
-        want = [n for _, n in sorted(dated, reverse=True)[: args.latest]]
+                want.append(n)
+        # anything not following the naming scheme is still considered, oldest
+        # last, so a hand-named capture is not silently unreachable
+        if len(want) < args.latest:
+            for n in sorted(x for x in names if not x.startswith("dhaka-")):
+                if len(want) >= args.latest:
+                    break
+                m = manifest_of(n)
+                if m and m.get("status") in ("ok", "partial"):
+                    want.append(n)
 
     want = [n for n in want if not (args.to / n / "manifest.json").exists()]
     if not want:
