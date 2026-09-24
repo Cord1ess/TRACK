@@ -15,6 +15,7 @@ import argparse
 import csv
 import json
 import os
+import shutil
 import sys
 import tarfile
 from pathlib import Path
@@ -51,6 +52,19 @@ def main() -> int:
 
     out = args.to.resolve()
     (out / "captures").mkdir(parents=True, exist_ok=True)
+
+    # Clear anything a previous interrupted run left behind: staging folders,
+    # and capture folders with no manifest, which means the extract never
+    # finished. Both are re-fetched below rather than left to accumulate.
+    stale = 0
+    for d in (out / "captures").iterdir():
+        if not d.is_dir():
+            continue
+        if d.name.endswith(".partial") or not (d / "manifest.json").exists():
+            shutil.rmtree(d, ignore_errors=True)
+            stale += 1
+    if stale:
+        print(f"[snapshot] cleared {stale} unfinished folder(s) from an earlier run")
     rows, done, skipped = [], 0, 0
 
     for i, n in enumerate(want, 1):
@@ -82,10 +96,29 @@ def main() -> int:
         except Exception as e:
             print(f"  {n}: tar unreadable ({type(e).__name__}), skipped")
             continue
-        dst.mkdir(parents=True, exist_ok=True)
-        with tarfile.open(tp, "r:*") as tar:
-            tar.extractall(dst, filter="data")
-        (dst / "manifest.json").write_bytes(Path(mp).read_bytes())
+        # Extract into a fresh temporary folder, then move it into place.
+        #
+        # Extracting straight over a half-finished capture raises WinError 4390
+        # on Windows: tarfile's "data" filter resolves each destination path,
+        # and hits an existing directory where it expects to create one. So a
+        # resumed download crashed instead of repairing what it found.
+        #
+        # This way an interrupted run leaves a stray .partial folder and
+        # nothing else, the real capture folder is only ever created complete,
+        # and re-running repairs rather than crashes.
+        staging = dst.with_name(dst.name + ".partial")
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir(parents=True, exist_ok=True)
+        try:
+            with tarfile.open(tp, "r:*") as tar:
+                tar.extractall(staging, filter="data")
+            (staging / "manifest.json").write_bytes(Path(mp).read_bytes())
+            shutil.rmtree(dst, ignore_errors=True)      # any earlier partial
+            staging.replace(dst)
+        except Exception as e:
+            shutil.rmtree(staging, ignore_errors=True)
+            print(f"  {n}: extract failed ({type(e).__name__}), left for the next run")
+            continue
         done += 1
         if done % 25 == 0 or i == len(want):
             print(f"  {i}/{len(want)}  ({done} fetched, {skipped} already here)", flush=True)

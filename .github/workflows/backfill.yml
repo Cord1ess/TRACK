@@ -1,0 +1,100 @@
+# Run the model over captures already in the archive, and store the result.
+#
+# Collection captures tiles; this turns them into road weights. A capture is
+# 20 MB of tiles, its weights are about 2 MB, and the weights are what any
+# analysis over time actually wants: one number per road per capture.
+#
+# It runs here rather than on a laptop because this is where the data already
+# is. A runner fetches a capture from the archive in about 4 seconds; a home
+# connection takes closer to 45.
+#
+# Deliberately capped at 10 parallel jobs. The free limit is 20, but the
+# collect chain needs a runner every few minutes and would be starved by a
+# backfill using every slot, which would put gaps in the sequence it is
+# still building.
+#
+# Start it from Actions -> backfill -> Run workflow, with a date range.
+
+name: backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "First day, YYYY-MM-DD"
+        required: true
+      end:
+        description: "Last day, YYYY-MM-DD (inclusive)"
+        required: true
+      shards:
+        description: "Parallel jobs (10 keeps a runner free for collection)"
+        default: "10"
+
+permissions:
+  contents: read
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  HF_REPO: ${{ secrets.HF_REPO }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+      total: ${{ steps.plan.outputs.total }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r data-collection/requirements.txt
+
+      # Work out which captures fall in the range and split them into shards.
+      # The name carries the timestamp, so no manifest has to be read.
+      - id: plan
+        run: |
+          python - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, os
+          from huggingface_hub import HfApi
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          names = sorted(e.path.split("/")[-1] for e in
+                         api.list_repo_tree(os.environ["HF_REPO"], path_in_repo="captures",
+                                            repo_type="dataset")
+                         if "." not in e.path.split("/")[-1] and e.path.count("/") >= 1)
+          day = lambda n: n.split("dhaka-")[-1][:10]
+          want = [n for n in names
+                  if "${{ inputs.start }}" <= day(n) <= "${{ inputs.end }}"]
+          k = max(1, int("${{ inputs.shards }}"))
+          print(f"shards={json.dumps(list(range(k)))}")
+          print(f"total={len(want)}")
+          EOF
+          echo "planned $(grep total "$GITHUB_OUTPUT" | cut -d= -f2) captures"
+
+  weights:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false            # one bad capture must not abandon the rest
+      max-parallel: 10            # leave runners for the collect chain
+      matrix:
+        shard: ${{ fromJson(needs.plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: "**/requirements.txt"
+      - run: pip install -r data-collection/requirements.txt -r algorithms/requirements.txt
+
+      # Each shard takes every Nth capture, so all shards finish together even
+      # though night captures are smaller and faster than rush-hour ones.
+      - name: Process this shard
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ inputs.shards }}
+          START: ${{ inputs.start }}
+          END: ${{ inputs.end }}
+        run: python data-collection/storage/backfill.py
