@@ -1,56 +1,83 @@
-/* The week track along the bottom, and the two timelines it can show.
-
-   A capture belongs to one of two series. `scheduled` is the unbroken run the
-   collection workflow takes; `test` is everything taken by hand. They are
-   shown separately so a test never reads as a spike in the real sequence, and
-   so a gap in the scheduled run is visible as exactly that.
+/* The time track along the bottom.
 
    The track indexes CAPTURES, not clock slots. It used to quantise the week
    into 672 fifteen-minute slots, which worked while captures were 20 minutes
    apart and broke the moment they were not: at one capture every 6 minutes,
    twelve of them collapsed into five slots, seven were unreachable, and play
    froze because stepping from a slot landed back on the same slot. Now every
-   capture is its own stop and its position on the track comes from its
-   timestamp, so two captures four minutes apart are still two places to be. */
+   capture is its own stop and its position comes from its timestamp, so two
+   captures four minutes apart are still two places to be.
 
-import { $, clamp, state } from "./core.js";
+   The track spans whatever the captures cover, not a calendar week. Anchoring
+   to the Monday of the newest capture's week hid everything before it: a run
+   from Sep 16 to Sep 23 drew only the last three days.
+
+   It also zooms. A week of captures is over a thousand marks in a few hundred
+   pixels, so the view is a window [view0, view1] of the whole span and the
+   wheel narrows it around the pointer. */
+
+import { $, DHAKA_OFFSET, clamp, clock12, dayLabel, dayShort, dhaka, state } from "./core.js";
 import { fillCaptureSelect, selectCapture, setCapturesChangedHook } from "./captures.js";
 
-const WEEK_MS = 7 * 24 * 3600 * 1000;
-const DHAKA_OFFSET = 6 * 3600 * 1000;          // captures are stamped UTC, Dhaka is UTC+6
-const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const STEP_MS = 900;                           // one capture per this long at 1x
-const SCHEDULED_GAP_MIN = 25;                  // longer than this between scheduled captures is a gap
+const GAP_MIN = 25;                            // a longer wait than this is a gap
+const MIN_VIEW = 1 / 2000;                     // deepest zoom: about one capture wide
 
-/* Captures in the series now showing, oldest first. */
-export function seriesCaptures(series = state.timeline.series) {
+/** Midnight Dhaka time on the day containing t, as a UTC instant. */
+function dayStart(t) {
+  const d = dhaka(t);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - DHAKA_OFFSET;
+}
+
+/* ── the stops ─────────────────────────────────────────────────────────── */
+
+/** Every capture with a readable timestamp, oldest first. */
+export function allCaptures() {
   return state.captures
-    .filter((c) => (c.series || "test") === series && !isNaN(Date.parse(c.captured_utc)))
+    .filter((c) => !isNaN(Date.parse(c.captured_utc)))
     .sort((a, b) => Date.parse(a.captured_utc) - Date.parse(b.captured_utc));
 }
 
 export function buildTimeline() {
   const tl = state.timeline;
-  const mine = seriesCaptures();
+  // A rebuild replaces every stop, so a running timer is stepping through a
+  // list that no longer exists. Clear it, remember it was playing, and start a
+  // fresh one at the end: leaving `playing` true with an orphaned interval
+  // behind it was why pause could not stop playback.
+  const wasPlaying = tl.playing;
+  clearInterval(tl.timer);
+  tl.timer = null;
+  tl.playing = false;
 
-  // the week containing this series' newest capture
-  const anchor = mine.length ? Date.parse(mine[mine.length - 1].captured_utc) : Date.now();
-  const d = new Date(anchor + DHAKA_OFFSET);
-  const dow = (d.getUTCDay() + 6) % 7;
-  const monday = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - dow * 86400000;
-  tl.start = monday - DHAKA_OFFSET;
+  const mine = allCaptures();
+  const first = mine.length ? Date.parse(mine[0].captured_utc) : Date.now();
+  const last = mine.length ? Date.parse(mine[mine.length - 1].captured_utc) : first;
+  tl.start = dayStart(first);
+  tl.end = dayStart(last) + 86400000;           // to the end of the last day
+  tl.span = Math.max(tl.end - tl.start, 3600000);
+  tl.days = Math.max(1, Math.round(tl.span / 86400000));
 
-  // one stop per capture that falls inside the week, in time order
-  tl.stops = [];
-  tl.outside = 0;
-  for (const c of mine) {
+  tl.stops = mine.map((c) => {
     const t = Date.parse(c.captured_utc);
-    const at = (t - tl.start) / WEEK_MS;        // 0..1 across the track
-    if (at >= 0 && at < 1) tl.stops.push({ name: c.name, t, at });
-    else tl.outside += 1;                       // older than the week the track draws
+    return {
+      name: c.name,
+      t,
+      at: (t - tl.start) / tl.span,             // 0..1 across the whole span
+      coverage: c.coverage_pct,
+      tiles: c.tiles_nonempty,
+      status: c.status,
+    };
+  });
+
+  // gaps: where the sequence skipped a beat
+  tl.gaps = new Set();
+  for (let k = 1; k < tl.stops.length; k++) {
+    if ((tl.stops[k].t - tl.stops[k - 1].t) / 60000 > GAP_MIN) tl.gaps.add(k);
   }
 
-  // stay on the capture already showing if it is in this series, else the newest
+  if (!Number.isFinite(tl.view0)) { tl.view0 = 0; tl.view1 = 1; }
+
+  // stay on the capture already showing, else the newest
   const here = tl.stops.findIndex((s) => s.name === (state.capture && state.capture.name));
   tl.index = here >= 0 ? here : Math.max(0, tl.stops.length - 1);
 
@@ -60,60 +87,154 @@ export function buildTimeline() {
     const name = tl.stops[tl.index].name;
     if (name !== (state.capture && state.capture.name)) selectCapture(name, false);
   }
+  if (wasPlaying) startPlay();                  // a new capture must not stop play
 }
 
-/* The marks, and the band showing the stretch the series actually covers. A
-   run of one morning should not look like a week that failed to load. */
+/* ── zoom ──────────────────────────────────────────────────────────────── */
+
+/** Where a stop sits in the visible window, 0..1, or outside it. */
+const inView = (at) => {
+  const tl = state.timeline;
+  return (at - tl.view0) / Math.max(tl.view1 - tl.view0, 1e-9);
+};
+
+/** Zoom by a factor about a point in the window (0..1 across the track). */
+export function zoomAt(factor, pointer = 0.5) {
+  const tl = state.timeline;
+  if (!tl.stops.length) return;
+  const w = tl.view1 - tl.view0;
+  const anchor = tl.view0 + clamp(pointer, 0, 1) * w;
+  const next = clamp(w * factor, MIN_VIEW, 1);
+  // keep the anchor under the pointer, then push the window inside 0..1
+  let a = anchor - (anchor - tl.view0) * (next / w);
+  a = clamp(a, 0, 1 - next);
+  tl.view0 = a;
+  tl.view1 = a + next;
+  renderTrack();
+  renderTimeline();
+}
+
+/** Show everything again. */
+export function zoomReset() {
+  const tl = state.timeline;
+  tl.view0 = 0;
+  tl.view1 = 1;
+  renderTrack();
+  renderTimeline();
+}
+
+/** Slide the window without changing its width. */
+export function panView(fraction) {
+  const tl = state.timeline;
+  const w = tl.view1 - tl.view0;
+  const a = clamp(tl.view0 + fraction * w, 0, 1 - w);
+  tl.view0 = a;
+  tl.view1 = a + w;
+  renderTrack();
+  renderTimeline();
+}
+
+/** Keep the playhead in view while playing at a deep zoom. */
+function scrollIntoView(at) {
+  const tl = state.timeline;
+  const w = tl.view1 - tl.view0;
+  if (at >= tl.view0 && at <= tl.view1) return;
+  const a = clamp(at - w / 2, 0, 1 - w);
+  tl.view0 = a;
+  tl.view1 = a + w;
+  renderTrack();
+}
+
+/* ── drawing ───────────────────────────────────────────────────────────── */
+
+/* The ticks above the track. Zoomed out they are days; zoomed in they become
+   hours, because a day label on a two-hour window says nothing. */
 function renderTrack() {
   const tl = state.timeline;
-  $("trackDays").innerHTML = DAYS.map((x) => `<div>${x}</div>`).join("");
+  const w = tl.view1 - tl.view0;
+  const visMs = tl.span * w;
+  const days = $("trackDays");
+  if (!days) return;
 
-  const gaps = gapStops();
-  $("trackMarks").innerHTML = tl.stops
-    .map((s, i) => `<i class="${gaps.has(i) ? "gap" : ""}" style="left:${s.at * 100}%"></i>`)
+  const marks = [];
+  if (visMs <= 8 * 3600000) {                   // under 8 hours: hourly
+    const step = visMs <= 2 * 3600000 ? 1800000 : 3600000;
+    const t0 = tl.start + tl.view0 * tl.span;
+    let t = Math.ceil(t0 / step) * step;
+    for (; t < t0 + visMs; t += step) {
+      marks.push([inView((t - tl.start) / tl.span), clock12(t)]);
+    }
+  } else {                                      // otherwise one per day shown
+    for (let i = 0; i <= tl.days; i++) {
+      const t = tl.start + i * 86400000;
+      const at = (t - tl.start) / tl.span;
+      if (at < tl.view0 - 1e-9 || at > tl.view1 + 1e-9) continue;
+      marks.push([inView(at), visMs <= 3 * 86400000 ? dayLabel(t) : dayShort(t)]);
+    }
+  }
+  days.innerHTML = marks
+    .map(([at, s]) => `<span style="left:${at * 100}%">${s}</span>`)
     .join("");
+
+  // the marks themselves, only those in the window
+  const out = [];
+  for (let i = 0; i < tl.stops.length; i++) {
+    const s = tl.stops[i];
+    if (s.at < tl.view0 - 1e-9 || s.at > tl.view1 + 1e-9) continue;
+    const cls = [];
+    if (tl.gaps.has(i)) cls.push("gap");
+    if (i === tl.index) cls.push("here");
+    if (s.status && s.status !== "ok") cls.push("warn");
+    out.push(`<i class="${cls.join(" ")}" data-i="${i}" style="left:${inView(s.at) * 100}%"></i>`);
+  }
+  $("trackMarks").innerHTML = out.join("");
 
   const span = $("trackSpan");
   if (tl.stops.length > 1) {
-    const a = tl.stops[0].at * 100;
-    span.style.left = `${a}%`;
-    span.style.width = `${tl.stops[tl.stops.length - 1].at * 100 - a}%`;
+    const a = inView(tl.stops[0].at) * 100;
+    const b = inView(tl.stops[tl.stops.length - 1].at) * 100;
+    span.style.left = `${clamp(a, 0, 100)}%`;
+    span.style.width = `${clamp(b, 0, 100) - clamp(a, 0, 100)}%`;
     span.hidden = false;
   } else {
     span.hidden = true;
   }
-}
 
-/* Stops where the scheduled sequence skipped a beat. Only meaningful for the
-   scheduled series: captures taken by hand are not supposed to be regular. */
-function gapStops() {
-  const tl = state.timeline;
-  const out = new Set();
-  if (tl.series !== "scheduled") return out;
-  for (let k = 1; k < tl.stops.length; k++) {
-    if ((tl.stops[k].t - tl.stops[k - 1].t) / 60000 > SCHEDULED_GAP_MIN) out.add(k);
+  const zl = $("tlZoomLabel");
+  if (zl) {
+    zl.textContent = w >= 0.999 ? "whole run"
+      : visMs < 3600000 ? `${Math.round(visMs / 60000)} min`
+      : visMs < 86400000 ? `${(visMs / 3600000).toFixed(1)} h`
+      : `${(visMs / 86400000).toFixed(1)} days`;
   }
-  return out;
 }
 
 export function renderTimeline() {
   const tl = state.timeline;
   const stop = tl.stops[tl.index];
-  $("trackHead").style.left = `${(stop ? stop.at : 0) * 100}%`;
 
-  const d = new Date((stop ? stop.t : tl.start) + DHAKA_OFFSET);
-  const hh = String(d.getUTCHours()).padStart(2, "0");
-  const mm = String(d.getUTCMinutes()).padStart(2, "0");
-  $("slotLabel").textContent = `${DAYS[(d.getUTCDay() + 6) % 7]} ${d.getUTCDate()} · ${hh}:${mm}`;
+  const head = $("trackHead");
+  if (stop) {
+    const at = inView(stop.at);
+    head.style.left = `${clamp(at, 0, 1) * 100}%`;
+    head.hidden = at < -0.01 || at > 1.01;
+  } else {
+    head.style.left = "0%";
+    head.hidden = false;
+  }
 
-  document.querySelectorAll("#trackMarks i").forEach((el, n) => {
-    el.classList.toggle("here", n === tl.index);
+  $("slotLabel").textContent = stop
+    ? `${dayLabel(stop.t)} · ${clock12(stop.t)}`
+    : "—";
+
+  document.querySelectorAll("#trackMarks i").forEach((el) => {
+    el.classList.toggle("here", Number(el.dataset.i) === tl.index);
   });
 
   const st = $("slotState");
   const n = tl.stops.length;
   if (!n) {
-    st.textContent = tl.series === "scheduled" ? "no scheduled captures yet" : "no test captures";
+    st.textContent = "no captures yet";
     st.className = "";
   } else {
     st.textContent = `capture ${tl.index + 1} of ${n}`;
@@ -122,15 +243,41 @@ export function renderTimeline() {
 
   const count = $("seriesCount");
   if (count) {
-    const other = tl.series === "scheduled" ? "test" : "scheduled";
-    const mine = seriesCaptures().length;
-    const theirs = seriesCaptures(other).length;
-    // `mine` counts the series; stops counts what fits on this week's track.
-    // Saying only one of them would be a number that does not match the marks.
-    const shown = tl.outside ? `${n} of ${mine} ${tl.series} this week` : `${mine} ${tl.series}`;
-    count.textContent = `${shown}${theirs ? ` · ${theirs} ${other}` : ""}`;
+    count.textContent = n
+      ? `${n} captures · ${tl.days} day${tl.days === 1 ? "" : "s"}`
+      : "";
   }
+  renderStopCard();
 }
+
+/* What one capture is: shown under the track when a mark is clicked. */
+function renderStopCard() {
+  const card = $("stopCard");
+  if (!card) return;
+  const tl = state.timeline;
+  const s = tl.stops[tl.index];
+  if (!s || !tl.cardOpen) { card.hidden = true; return; }
+
+  const prev = tl.index > 0 ? tl.stops[tl.index - 1] : null;
+  const gapMin = prev ? Math.round((s.t - prev.t) / 60000) : null;
+  const rows = [
+    ["When", `${dayLabel(s.t)}, ${clock12(s.t)}`],
+    ["Since previous", gapMin === null ? "first capture"
+      : `${gapMin} min${tl.gaps.has(tl.index) ? " — gap" : ""}`],
+    ["Coverage", s.coverage != null ? `${s.coverage}%` : "—"],
+    ["Painted tiles", s.tiles != null ? s.tiles.toLocaleString() : "—"],
+    ["Status", s.status || "—"],
+    ["Capture", s.name],
+  ];
+  card.innerHTML =
+    `<button class="icon close" id="stopCardClose" aria-label="Close">×</button>` +
+    rows.map(([k, v]) => `<div class="row"><span>${k}</span><b>${v}</b></div>`).join("");
+  card.hidden = false;
+  const x = $("stopCardClose");
+  if (x) x.onclick = () => { tl.cardOpen = false; renderStopCard(); };
+}
+
+/* ── moving about ──────────────────────────────────────────────────────── */
 
 /** Go to a stop by its position in the list. */
 export function setStop(i, fromUser) {
@@ -139,19 +286,20 @@ export function setStop(i, fromUser) {
   tl.index = clamp(Math.round(i), 0, tl.stops.length - 1);
   const name = tl.stops[tl.index].name;
   if (name !== (state.capture && state.capture.name)) selectCapture(name, false);
+  if (tl.playing) scrollIntoView(tl.stops[tl.index].at);
   renderTimeline();
   if (fromUser && tl.playing) stopPlay();
 }
 
-/** Go to whichever capture sits nearest a fraction across the week. Dragging
-    wants this: the space between captures holds nothing to show. */
+/** Go to whichever capture sits nearest a fraction across the VISIBLE window.
+    Dragging wants this: the space between captures holds nothing to show. */
 export function setAt(fraction, fromUser) {
   const tl = state.timeline;
   if (!tl.stops.length || !Number.isFinite(fraction)) return;
-  const f = clamp(fraction, 0, 1);
+  const target = tl.view0 + clamp(fraction, 0, 1) * (tl.view1 - tl.view0);
   let best = 0;
   for (let i = 1; i < tl.stops.length; i++) {
-    if (Math.abs(tl.stops[i].at - f) < Math.abs(tl.stops[best].at - f)) best = i;
+    if (Math.abs(tl.stops[i].at - target) < Math.abs(tl.stops[best].at - target)) best = i;
   }
   setStop(best, fromUser);
 }
@@ -161,18 +309,6 @@ export function stepCapture(dir) {
   const tl = state.timeline;
   if (!tl.stops.length) return;
   setStop((tl.index + dir + tl.stops.length) % tl.stops.length, false);
-}
-
-export function setSeries(series) {
-  const tl = state.timeline;
-  if (series !== "scheduled" && series !== "test") return;
-  if (tl.series === series) return;
-  stopPlay();
-  tl.series = series;
-  document.querySelectorAll("#series button")
-    .forEach((b) => b.classList.toggle("on", b.dataset.series === series));
-  fillCaptureSelect();          // the picker follows the timeline
-  buildTimeline();
 }
 
 export function setSpeed(mult) {
@@ -186,6 +322,7 @@ export function setSpeed(mult) {
 export function startPlay() {
   const tl = state.timeline;
   if (tl.playing || tl.stops.length < 2) return;
+  clearInterval(tl.timer);        // never leave a second interval running
   tl.playing = true;
   $("playIcon").innerHTML = '<path d="M4.5 3h2.6v10H4.5zM8.9 3h2.6v10H8.9z" fill="currentColor"/>';
   $("playBtn").title = "Pause (space)";
@@ -196,6 +333,7 @@ export function stopPlay() {
   const tl = state.timeline;
   tl.playing = false;
   clearInterval(tl.timer);
+  tl.timer = null;
   $("playIcon").innerHTML = '<path d="M5 3.2l7.2 4.8-7.2 4.8z" fill="currentColor"/>';
   $("playBtn").title = "Play (space)";
 }
@@ -209,10 +347,20 @@ export function bindTrack() {
     return r.width > 0 ? (ev.clientX - r.left) / r.width : null;
   };
   let dragging = false;
+  let downAt = 0;
+
   track.addEventListener("pointerdown", (e) => {
     dragging = true;
+    downAt = Date.now();
     try { track.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
-    setAt(toFraction(e), true);
+    // clicking a mark opens its details; anywhere else just moves the head
+    const mark = e.target && e.target.closest && e.target.closest("#trackMarks i");
+    if (mark) {
+      state.timeline.cardOpen = true;
+      setStop(Number(mark.dataset.i), true);
+    } else {
+      setAt(toFraction(e), true);
+    }
   });
   track.addEventListener("pointermove", (e) => { if (dragging) setAt(toFraction(e), true); });
   const end = (e) => {
@@ -221,12 +369,30 @@ export function bindTrack() {
   };
   track.addEventListener("pointerup", end);
   track.addEventListener("pointercancel", end);
-  // the wheel moves between captures, which is what there is to look at
+
+  // the wheel zooms about the pointer; with shift it steps between captures
   track.addEventListener("wheel", (e) => {
     e.preventDefault();
-    if (state.timeline.playing) stopPlay();
-    stepCapture(Math.sign(e.deltaY || e.deltaX) || 1);
+    const dir = Math.sign(e.deltaY || e.deltaX) || 1;
+    if (e.shiftKey) {
+      if (state.timeline.playing) stopPlay();
+      stepCapture(dir);
+    } else {
+      zoomAt(dir > 0 ? 1.25 : 0.8, toFraction(e) ?? 0.5);
+    }
   }, { passive: false });
+
+  // double click zooms in hard about that point, and out again if already deep
+  track.addEventListener("dblclick", (e) => {
+    const tl = state.timeline;
+    if (tl.view1 - tl.view0 < 0.05) zoomReset();
+    else zoomAt(0.15, toFraction(e) ?? 0.5);
+  });
+
+  const on = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
+  on("tlZoomIn", () => zoomAt(0.6, 0.5));
+  on("tlZoomOut", () => zoomAt(1 / 0.6, 0.5));
+  on("tlZoomAll", zoomReset);
 }
 
 setCapturesChangedHook(buildTimeline);

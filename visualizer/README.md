@@ -39,16 +39,29 @@ cd ../algorithms && python pipeline.py --only impute,layers --demote-strength 0.
 
 ## Timeline
 
-The bar at the bottom is a week, with one mark per capture placed at its own
-timestamp rather than snapped to a grid. Two switches pick the timeline:
-scheduled captures, the unbroken collection sequence, or tests taken by hand.
-Play walks the captures themselves at 0.5x to 4x, the wheel and shift-arrows
-step between them, and dragging lands on the nearest one.
+The bar at the bottom spans whatever the captures cover, with one mark per
+capture placed at its own timestamp rather than snapped to a grid. Times are
+Dhaka local (UTC+6) in 12-hour form, because that is the clock the traffic
+happened on.
 
-A week of slots was the earlier design and it broke: at one capture every six
-minutes, twelve captures collapsed into five 15-minute slots, seven were
-unreachable, and play could not advance because stepping landed back on the
-same slot.
+It zooms: the wheel narrows the window about the pointer, `+` `−` `All` and a
+double click do the same, and the ticks become hours once the window is under
+eight hours wide. Clicking a mark opens that capture's details — when it was
+taken, the wait since the previous one, coverage, painted tiles and status.
+Play walks the captures at 0.5x to 4x and keeps the head in view when zoomed
+in, shift with the wheel or the arrows steps between them, and dragging lands
+on the nearest one. Red marks are gaps of more than 25 minutes.
+
+Two earlier designs broke here, and both are worth remembering. Quantising the
+week into 15-minute slots collapsed twelve captures six minutes apart into five
+slots, left seven unreachable, and froze play because stepping landed back on
+the same slot. Anchoring the track to the Monday of the newest capture's week
+then hid every capture before it: a run from 16 to 23 September drew only the
+last three days, and the fixed Mon..Sun labels named the wrong dates.
+
+A rebuild of the track clears the play timer and restarts it. Leaving the timer
+running against a replaced list of stops meant `playing` stayed true behind an
+orphaned interval, and pause could not stop it.
 
 ## Live data
 

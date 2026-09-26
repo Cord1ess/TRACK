@@ -4,7 +4,7 @@
    boot.js: it is listed, marked on the timeline, and shown, unless an older
    one was chosen on purpose, in which case the choice is left alone. */
 
-import { $, escapeHtml, state } from "./core.js";
+import { $, clock12, dayLabel, escapeHtml, state } from "./core.js";
 import { STATIC, apiJson, getManifest } from "./api.js";
 import { ensureLayers, hasSource } from "./mapkit.js";
 import { fitCapture, syncTrafficTiles } from "./basemap.js";
@@ -12,13 +12,12 @@ import { fitCapture, syncTrafficTiles } from "./basemap.js";
 export const newestCapture = (list) => list.reduce((a, b) =>
   (Date.parse(b.captured_utc) || 0) > (Date.parse(a.captured_utc) || 0) ? b : a);
 
-/* The newest capture in the timeline now showing, or nothing if that series
-   is empty. The picker lists one series, so "go to the newest" has to mean
-   the newest of those, not the newest overall. */
+/* The newest capture, or nothing if there are none. The timeline shows every
+   capture now: splitting them into scheduled and hand-taken series meant a
+   capture could exist and still be invisible, which was more confusing than
+   the distinction was worth. */
 export function newestInSeries() {
-  const series = state.timeline.series;
-  const mine = state.captures.filter((c) => (c.series || "test") === series);
-  return mine.length ? newestCapture(mine) : null;
+  return state.captures.length ? newestCapture(state.captures) : null;
 }
 
 /* The timeline owns the track; it hands us a rebuild function rather than us
@@ -26,21 +25,19 @@ export function newestInSeries() {
 let onCapturesChanged = () => {};
 export function setCapturesChangedHook(fn) { onCapturesChanged = fn; }
 
-/* The picker lists the captures the timeline is showing, newest first, and
-   names them by time rather than by folder. Listing every capture regardless
-   of series meant the picker and the track disagreed about what existed. */
+/* The picker lists every capture, newest first, named by time rather than by
+   folder, so it always agrees with the marks on the track. */
 export function fillCaptureSelect() {
   const sel = $("capture");
   const current = sel.value;
-  const series = state.timeline.series;
   const mine = state.captures
-    .filter((c) => (c.series || "test") === series)
+    .slice()
     .sort((a, b) => Date.parse(b.captured_utc) - Date.parse(a.captured_utc));
   sel.innerHTML = "";
   if (!mine.length) {
     const o = document.createElement("option");
     o.value = "";
-    o.textContent = series === "scheduled" ? "no scheduled capture yet" : "no test capture";
+    o.textContent = "no captures yet";
     o.disabled = o.selected = true;
     sel.appendChild(o);
     return;
@@ -48,8 +45,10 @@ export function fillCaptureSelect() {
   for (const c of mine) {
     const o = document.createElement("option");
     o.value = c.name;
-    const t = c.captured_utc || "";
-    o.textContent = `${t.slice(5, 10)} ${t.slice(11, 16)} UTC`;
+    // Dhaka local, 12-hour, to match the track and the readout. The raw UTC
+    // 24-hour stamp was a different clock from the one on the timeline.
+    const ms = Date.parse(c.captured_utc);
+    o.textContent = isNaN(ms) ? c.name : `${dayLabel(ms)} · ${clock12(ms)}`;
     sel.appendChild(o);
   }
   if (mine.some((c) => c.name === current)) sel.value = current;

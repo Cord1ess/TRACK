@@ -246,21 +246,29 @@ body.dark #timeline .play:hover { filter: brightness(1.3); }
   cursor: pointer; overflow: hidden; touch-action: none;
 }
 .track:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.track .days { position: absolute; inset: 0; display: flex; }
-.track .days div {
-  flex: 1; border-right: 1px solid var(--border-soft); font-size: 9.5px; color: var(--text-3);
-  padding: 3px 0 0 5px; letter-spacing: .3px; user-select: none;
+/* The ticks are placed by time, not spread evenly: the window can show nine
+   days or ninety minutes, so a flex row of equal cells would mislabel them. */
+.track .days { position: absolute; inset: 0; pointer-events: none; }
+.track .days span {
+  position: absolute; top: 0; bottom: 0; padding: 3px 0 0 5px;
+  border-left: 1px solid var(--border-soft); font-size: 9.5px; color: var(--text-3);
+  letter-spacing: .3px; user-select: none; white-space: nowrap;
 }
-.track .days div:last-child { border-right: 0; }
 .track .marks { position: absolute; left: 0; right: 0; bottom: 7px; height: 12px; }
 .track .marks i {
   position: absolute; bottom: 0; width: 3px; height: 12px; border-radius: 1.5px;
   background: var(--accent); transform: translateX(-1.5px);
   transition: height .1s ease, background .1s ease;
 }
+/* a wider invisible hit area, so one capture out of a thousand is clickable */
+.track .marks i::before {
+  content: ""; position: absolute; left: -4px; right: -4px; top: -6px; bottom: -8px;
+}
+.track .marks i:hover { height: 16px; filter: brightness(1.25); }
 .track .marks i.here { height: 18px; background: var(--text); }
-/* a gap in the scheduled sequence: the thing the research cannot have */
+/* a gap in the sequence: the thing the research cannot have */
 .track .marks i.gap { background: #e5484d; opacity: .5; height: 7px; }
+.track .marks i.warn { background: #f5a524; }
 .track .head {
   position: absolute; top: 0; bottom: 0; width: 2px; background: var(--text);
   transform: translateX(-1px); pointer-events: none;
@@ -369,3 +377,18 @@ body.dark .collect:hover { filter: brightness(1.25); }
 .collect .chint { font-size: 10.5px; color: var(--text-3); white-space: nowrap; }
 @media (max-width: 1100px) { .collect .chint, .collect .cbar { display: none; } }
 @keyframes run-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+/* ── one capture's details, opened by clicking its mark ────────────────── */
+#stopCard {
+  margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: var(--inset);
+  border: 1px solid var(--border-soft); position: relative; font-size: 11px;
+}
+#stopCard .row {
+  display: flex; justify-content: space-between; gap: 12px; padding: 2px 0;
+}
+#stopCard .row span { color: var(--text-3); }
+#stopCard .row b { font-weight: 600; font-variant-numeric: tabular-nums; }
+#stopCard .close {
+  position: absolute; top: 4px; right: 4px; width: 20px; height: 20px;
+  font-size: 14px; line-height: 1; border-radius: 4px; background: transparent;
+}

@@ -60,6 +60,39 @@ export const isOurs = (id) => id === "dim" || id === "traffic" || id.startsWith(
 
 export const $ = (id) => document.getElementById(id);
 export const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+
+/* ── time, as the page shows it ─────────────────────────────────────────────
+   Captures are stamped UTC; Dhaka is UTC+6 and the traffic happened on that
+   clock, so everything on screen is Dhaka local time in 12-hour form. These
+   live here rather than in timeline.js because the capture picker needs them
+   too, and timeline.js already imports captures.js: putting them there would
+   make the module graph a cycle instead of a tree. */
+export const DHAKA_OFFSET = 6 * 3600 * 1000;
+const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** A Date shifted into Dhaka time, to read fields off with getUTC*. */
+export const dhaka = (t) => new Date(t + DHAKA_OFFSET);
+
+/** 2:05 pm */
+export function clock12(t) {
+  const d = dhaka(t);
+  const h = d.getUTCHours();
+  return `${h % 12 || 12}:${String(d.getUTCMinutes()).padStart(2, "0")} ${h < 12 ? "am" : "pm"}`;
+}
+
+/** Thu 17 Sep */
+export function dayLabel(t) {
+  const d = dhaka(t);
+  return `${DAY_NAMES[(d.getUTCDay() + 6) % 7]} ${d.getUTCDate()} ${MONTH_NAMES[d.getUTCMonth()]}`;
+}
+
+/** Mon 21 — no month, for a tick that already sits under one. */
+export function dayShort(t) {
+  const d = dhaka(t);
+  return `${DAY_NAMES[(d.getUTCDay() + 6) % 7]} ${d.getUTCDate()}`;
+}
 export const finite = (v, fallback) => (Number.isFinite(v) ? v : fallback);
 export const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -103,16 +136,21 @@ export const state = {
   weights: { g: 25, o: 55, r: 85, d: 105 }, jam: 4, beta: 4,
   inspect: false, reloading: false, booted: false,
   timeline: {
-    start: null,           // midnight Monday of the week the track draws, UTC
+    start: null,           // midnight Dhaka time on the first capture's day, UTC
+    end: null, span: 0, days: 0,
     index: 0,              // which stop the head is on
     playing: false, timer: null, speed: 1,
-    series: "scheduled",   // which of the two timelines is showing
-    // One entry per capture in that series: {name, t, at}, oldest first, where
-    // `at` is 0..1 across the week. Captures are the stops, not clock slots:
-    // quantising to 15 minutes lost seven of twelve captures that arrived six
-    // minutes apart, and left play unable to advance.
+    // The visible window, as fractions of the whole span. Zoom narrows it; a
+    // week of captures is over a thousand marks in a few hundred pixels.
+    view0: 0, view1: 1,
+    cardOpen: false,       // whether one capture's details are showing
+    // One entry per capture: {name, t, at, coverage, tiles, status}, oldest
+    // first, where `at` is 0..1 across the whole span. Captures are the stops,
+    // not clock slots: quantising to 15 minutes lost seven of twelve captures
+    // that arrived six minutes apart, and left play unable to advance.
     stops: [],
-    outside: 0,            // captures in this series that fall outside the drawn week
+    gaps: new Set(),       // indices where the sequence skipped a beat
+    outside: 0,
   },
 };
 

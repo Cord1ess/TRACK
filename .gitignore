@@ -30,3 +30,4 @@ algorithms/output/graph/*
 
 # The static site build_site.py produces for GitHub Pages
 site/
+week1/

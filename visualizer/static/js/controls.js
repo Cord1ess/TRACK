@@ -16,7 +16,7 @@ import {
 import { applyGraph, applyBreath, graphExprs, syncBreathing } from "./graph.js";
 import { applyLayerOpacity } from "./layers.js";
 import { selectCapture } from "./captures.js";
-import { setSeries, setSpeed, stepCapture, togglePlay } from "./timeline.js";
+import { setSpeed, stepCapture, togglePlay, zoomAt, zoomReset } from "./timeline.js";
 import { setInspect } from "./inspector.js";
 import { setTheme } from "./theme.js";
 import { renderReadouts } from "./legend.js";
@@ -283,8 +283,6 @@ export function bindControls() {
   $("reloadModel").onclick = reloadModel;
   $("abFlip").onclick = abFlip;
   $("playBtn").onclick = togglePlay;
-  document.querySelectorAll("#series button")
-    .forEach((b) => b.onclick = () => setSeries(b.dataset.series));
   document.querySelectorAll("#playSpeed button")
     .forEach((b) => b.onclick = () => setSpeed(b.dataset.speed));
 

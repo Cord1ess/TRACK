@@ -288,12 +288,14 @@
 <!-- ───────────────────────────── timeline ───────────────────────────── -->
 <div id="timeline">
   <div class="tlhead">
-    <div class="seg small" id="series" role="group" aria-label="Timeline">
-      <button data-series="scheduled" class="on" title="The 10-minute collection sequence">Scheduled</button>
-      <button data-series="test" title="Captures taken by hand">Tests</button>
-    </div>
     <span class="tlcount" id="seriesCount"></span>
     <div class="grow"></div>
+    <div class="seg small" id="tlZoomBtns" role="group" aria-label="Timeline zoom">
+      <button id="tlZoomOut" title="Show more time">&minus;</button>
+      <button id="tlZoomIn" title="Show less time">+</button>
+      <button id="tlZoomAll" title="Show the whole run">All</button>
+    </div>
+    <span class="tlcount" id="tlZoomLabel"></span>
     <div class="seg small" id="playSpeed" role="group" aria-label="Playback speed">
       <button data-speed="0.5">0.5x</button>
       <button data-speed="1" class="on">1x</button>
@@ -316,6 +318,7 @@
       <span id="slotState">no data</span>
     </div>
   </div>
+  <div id="stopCard" hidden></div>
 </div>
 
 <!-- ───────────────────────── status + inspector ───────────────────────── -->
