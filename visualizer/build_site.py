@@ -122,6 +122,7 @@ def clear_stale(out: Path) -> None:
     for p in (out / "data").glob("*.json"):
         p.unlink()
     shutil.rmtree(out / "data" / "layers", ignore_errors=True)
+    shutil.rmtree(out / "data" / "frames", ignore_errors=True)
     for name in ("app.js",):                     # written by an older build
         (out / name).unlink(missing_ok=True)
 
@@ -136,6 +137,34 @@ def write_vector(service, parts: tuple, out: Path, prefix: str) -> dict:
         data, version = service.payload(part)
         (out / f"{prefix}-{part}.{version}.json").write_bytes(gzip.decompress(data))
     return service.info()
+
+
+def write_frames(caps: list[dict], out: Path) -> dict:
+    """Each processed capture's colours, the answer to /api/frames and
+    /frame/<name> for a site with no server. Without it the page could not tell
+    one capture's model from another's and would show the newest everywhere."""
+    if not server.MODEL or not server.MODEL.ensure():
+        return {}
+    version, count, parts = server.MODEL.line_info()
+    if not version:
+        return {}
+    files = {}
+    (out / "frames").mkdir(parents=True, exist_ok=True)
+    for c in caps:
+        src = server.frame_source(c["name"]) if c.get("processed") else None
+        if src is None:
+            continue
+        data = server.frame_bytes(c["name"], src)
+        if data is None:
+            continue
+        rel = f"data/frames/{c['name']}.{version}.json"
+        (out / "frames" / f"{c['name']}.{version}.json").write_bytes(gzip.decompress(data))
+        files[c["name"]] = rel
+    slot = server.base_capture_slot()
+    base = next((c["name"] for c in caps if slot and c.get("captured_utc") == slot), "")
+    return {"v": version, "lines": count, "parts": parts, "base": base,
+            "processed": sorted(files), "stale": sorted(c["name"] for c in caps if c.get("stale")),
+            "files": files}
 
 
 def copy_layers(out: Path) -> list[dict]:
@@ -221,6 +250,8 @@ def main() -> int:
     ap.add_argument("--fresh", action="store_true", help="rebuild from empty instead of reusing the site folder")
     ap.add_argument("--captures", type=Path, help="captures folder (default: ../data-collection/captures)")
     ap.add_argument("--output", type=Path, help="pipeline output folder (default: ../algorithms/output)")
+    ap.add_argument("--weights", type=Path,
+                    help="processed weight tables, <capture>.csv.gz, to publish frames for")
     args = ap.parse_args()
     t0 = time.time()
 
@@ -233,6 +264,9 @@ def main() -> int:
     if not graph_json.exists() and packed.exists():
         graph_json.write_bytes(gzip.decompress(packed.read_bytes()))
         print(f"  graph   unpacked {packed.name}", flush=True)
+
+    server.MODEL = model_mod.discover(server.OUTPUT)
+    server.WEIGHTS = args.weights.resolve() if args.weights else None
 
     stage = Stage()
     out = args.out.resolve()
@@ -253,13 +287,16 @@ def main() -> int:
                 print(f"  pruned  {d.name}", flush=True)
 
     with stage("model"):
-        model = write_vector(model_mod.discover(server.OUTPUT), ("major", "minor"), out / "data", "model")
+        model = write_vector(server.MODEL, ("major", "minor"), out / "data", "model")
     if model.get("ready"):
         print(f"  model   version {model.get('version')}: {model.get('lines', 0):,} lines", flush=True)
     with stage("graph"):
         graph = write_vector(graph_mod.discover(server.OUTPUT), ("nodes", "links"), out / "data", "graph")
     if graph.get("ready"):
         print(f"  graph   version {graph.get('version')}: {graph.get('links', 0):,} segments", flush=True)
+    with stage("frames"):
+        frames = write_frames(caps, out / "data")
+    print(f"  frames  {len(frames.get('files', {}))} processed of {len(caps)} captures", flush=True)
     with stage("layers"):
         layers = copy_layers(out)
     print(f"  layers  {len(layers)}", flush=True)
@@ -272,7 +309,7 @@ def main() -> int:
     manifest = {
         "built_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "min_zoom": server.MIN_ZOOM, "keep": args.keep, "runs_url": runs_url, "runs_api": runs_api,
-        "captures": caps, "model": model, "graph": graph, "layers": layers,
+        "captures": caps, "model": model, "graph": graph, "layers": layers, "frames": frames,
         "timing": stage_history(caps),
     }
     (out / "data" / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")

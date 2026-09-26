@@ -157,10 +157,21 @@ def decode_capture(capture_dir, graph: RoadGraph, offset_px: float = 4.0, step_m
     n_pts = np.bincount(eidx, minlength=ne).astype(float)
     coloured = cls > 0
     n_col = np.bincount(eidx[coloured], minlength=ne).astype(float)
-    wsum = np.bincount(eidx[coloured], weights=_WEIGHT_LUT[cls[coloured]], minlength=ne)
     frac = {k: np.bincount(eidx[cls == k], minlength=ne) / np.maximum(n_pts, 1.0) for k in (1, 2, 3, 4)}
     coverage = n_col / np.maximum(n_pts, 1.0)
-    weight = np.where(n_col > 0, wsum / np.maximum(n_col, 1.0), 0.0)
+
+    # An observed road takes the colour Google drew on most of it, not the
+    # average of its samples. Averaging invented values Google never showed: a
+    # road drawn 85% green came out at 29.6, which is not a colour on the map
+    # and put the road between two rungs. The dominant colour is a 1:1 copy of
+    # what was painted, and the median edge has 100% of its coloured samples
+    # agreeing, so this discards almost nothing.
+    counts = np.stack([np.bincount(eidx[cls == k], minlength=ne) for k in (1, 2, 3, 4)], axis=1)
+    # A tie goes to the worse colour, the same rule the spread uses. About 3 %
+    # of painted roads tie, nearly all on two samples, one of each; breaking
+    # them toward green turned 84 green-or-dark-red coin flips into "clear".
+    dominant = 4 - counts[:, ::-1].argmax(axis=1)         # class id 1..4
+    weight = np.where(n_col > 0, _WEIGHT_LUT[dominant], 0.0)
     observed = coverage >= min_coverage
 
     rows = []

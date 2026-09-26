@@ -13,13 +13,15 @@ under output/ by default, so running several at once in one folder means they
 overwrite each other's observed.csv and complete.csv silently. Each worker is
 given --out of its own, and the graph is shared read-only.
 
-Already-done captures are skipped, so this can be stopped with Ctrl-C and
-restarted without losing work.
+Captures already done by the current model are skipped, so this can be
+stopped with Ctrl-C and restarted without losing work. Files written by the
+old blending model (no `hops` column) are redone and overwritten.
 """
 
 import argparse
 import gzip
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -32,8 +34,14 @@ HERE = Path(__file__).resolve().parent
 
 def one(args) -> tuple[str, bool, str]:
     """Process a single capture in its own output folder."""
-    capture, out_root, worker = args
-    work = HERE / f"_batch/w{worker}"
+    capture, out_root, _ = args
+    # One folder per PROCESS, not per job number. Jobs used to take folder
+    # `job % workers`, but the pool gives each job to whichever process is
+    # free, so two jobs with the same folder number ran at the same time and
+    # deleted each other's files: "no such file observed.csv", "succeeded but
+    # no output", and twice another capture's traffic under this one's name.
+    # A process runs one job at a time, so its own folder is never shared.
+    work = HERE / f"_batch/p{os.getpid()}"
     work.mkdir(parents=True, exist_ok=True)
 
     # The graph is 37 MB and identical for every capture. The pipeline looks
@@ -112,6 +120,17 @@ def one(args) -> tuple[str, bool, str]:
     return capture.name, True, f"{out.stat().st_size / 1e6:.2f} MB"
 
 
+def current(path: Path) -> bool:
+    """Done means written by the current model, which adds a `hops` column.
+    A file from the old blending model is redone, not kept: skipping anything
+    that merely existed would have left 181 gradient files in place."""
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as f:
+            return "hops" in f.readline().strip().split(",")
+    except (OSError, EOFError):
+        return False
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -132,7 +151,7 @@ def main() -> int:
         return 2
 
     args.out.mkdir(parents=True, exist_ok=True)
-    todo = [c for c in caps if not (args.out / f"{c.name}.csv.gz").exists()]
+    todo = [c for c in caps if not current(args.out / f"{c.name}.csv.gz")]
     skipped = len(caps) - len(todo)
     if args.limit:
         todo = todo[:args.limit]

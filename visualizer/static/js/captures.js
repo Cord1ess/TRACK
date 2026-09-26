@@ -8,6 +8,7 @@ import { $, clock12, dayLabel, escapeHtml, state } from "./core.js";
 import { STATIC, apiJson, getManifest } from "./api.js";
 import { ensureLayers, hasSource } from "./mapkit.js";
 import { fitCapture, syncTrafficTiles } from "./basemap.js";
+import { loadFrameIndex, renderModelInfo, showFrame } from "./frames.js";
 
 export const newestCapture = (list) => list.reduce((a, b) =>
   (Date.parse(b.captured_utc) || 0) > (Date.parse(a.captured_utc) || 0) ? b : a);
@@ -58,22 +59,29 @@ export function selectCapture(name, fit) {
   const next = state.captures.find((c) => c.name === name) || null;
   const changed = !state.capture || !next || state.capture.name !== next.name;
   state.capture = next;
-  if (!next) { $("capInfo").textContent = "no captures found"; return; }
+  if (!next) { $("capInfo").textContent = "no captures found"; return Promise.resolve(false); }
   if (changed) {
     if (hasSource("traffic")) syncTrafficTiles();
     else ensureLayers();
   }
-  const when = (next.captured_utc || "").replace("T", " ").replace("Z", "");
-  $("capInfo").innerHTML =
-    `${escapeHtml(next.status)} · z${next.zoom} · ${next.coverage_pct}% coverage · ` +
-    `${next.tiles_nonempty ?? "?"} of ${next.expected_tiles ?? "?"} tiles carry traffic<br>${escapeHtml(when)} UTC`;
+  const at = Date.parse(next.captured_utc);
+  const when = isNaN(at) ? "" : `${dayLabel(at)} · ${clock12(at)}`;
+  const tiles = next.tiles_nonempty != null && next.expected_tiles != null
+    ? `${Number(next.tiles_nonempty).toLocaleString()} of ${Number(next.expected_tiles).toLocaleString()} tiles carry traffic`
+    : "tile count unknown";
+  const html = `<b>${escapeHtml(when)}</b><br>${tiles} · ${escapeHtml(String(next.coverage_pct ?? "?"))}% coverage` +
+    (next.status && next.status !== "ok" ? ` · <span class="warn">${escapeHtml(next.status)}</span>` : "");
+  if ($("capInfo").innerHTML !== html) $("capInfo").innerHTML = html;
   if ($("capture").value !== name) $("capture").value = name;
   if (fit) fitCapture();
+  // the model follows the capture: its own colours, or none if not processed
+  return showFrame(next.name);
 }
 
 export async function loadCaptures() {
   try { state.captures = await apiJson("/api/captures"); } catch { state.captures = []; }
   if (!Array.isArray(state.captures)) state.captures = [];
+  await loadFrameIndex();
   fillCaptureSelect();
   const newest = newestInSeries();
   if (newest) {
@@ -91,13 +99,19 @@ export async function refreshCaptures() {
   let list;
   try { list = await apiJson("/api/captures"); } catch { return; }
   if (!Array.isArray(list)) return;
-  const names = (l) => l.map((c) => c.name).join("|");
+  // a capture being processed changes what the timeline and the model show,
+  // so it counts as a change just like a new capture arriving
+  const names = (l) => l.map((c) => `${c.name}${c.processed ? "+" : ""}${c.stale ? "~" : ""}`).join("|");
   if (names(list) === names(state.captures)) { renderCollection(); return; }
   const was = newestInSeries();
   const onNewest = !state.capture || !was || state.capture.name === was.name;
   state.captures = list;
+  await loadFrameIndex();
   fillCaptureSelect();
   onCapturesChanged();
+  // the capture on show may have just been processed: show its model now
+  if (state.capture && !onNewest) showFrame(state.capture.name);
+  renderModelInfo();
   const newest = newestInSeries();
   if (newest && onNewest) {
     $("capture").value = newest.name;
@@ -124,12 +138,12 @@ export function renderCollection() {
   if (state.captures.length) {
     const c = newestCapture(state.captures);
     const t = Date.parse(c.captured_utc);
-    parts.push(`Latest capture ${escapeHtml((c.captured_utc || "").slice(11, 16))} UTC`
+    parts.push(`Latest capture ${escapeHtml(isNaN(Date.parse(c.captured_utc)) ? "" : clock12(Date.parse(c.captured_utc)))}`
       + (isNaN(t) ? "" : `, ${ageText(Date.now() - t)}`));
   } else {
     parts.push("No capture yet. The map shows the road graph until the first collection run finishes");
   }
-  if (m && m.built_utc) parts.push(`site built ${escapeHtml(m.built_utc.slice(11, 16))} UTC`);
+  if (m && m.built_utc && !isNaN(Date.parse(m.built_utc))) parts.push(`site built ${escapeHtml(clock12(Date.parse(m.built_utc)))}`);
   parts.push(STATIC
     ? "collection runs every 10 minutes"
     : "the dev server checks for new data every 5 s");

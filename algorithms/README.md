@@ -88,7 +88,7 @@ probe traffic, so the small roads in the sample are the busy ones.
 | `decoder-coverage` | decoder | Observed roads, shaded by how much of each road Google painted |
 | `impute-method` | impute | Every road by how its weight was decided |
 | `kmeans-zones` | K-means | Observed roads grouped into 24 zones, with zone centres |
-| `knn-holdout` | KNN | A fifth of the observed roads hidden and predicted; colour is the error |
+| `knn-holdout` | spread | A fifth of the observed roads hidden and predicted by the spread; colour is how many levels off |
 | `lr-classes` | logistic regression | Predicted traffic level for every road; hold-out accuracy against KNN |
 | `dijkstra-reach` | Dijkstra | Minutes from Shahbagh to every road on today's traffic |
 | `astar-routes` | A* | Six routes across the city, on an empty network and on today's traffic |
@@ -105,8 +105,10 @@ trips. 600 A* searches in 40 seconds.
 
 Edge weight table, `observed.csv` and `complete.csv`:
 `slot_utc, edge_id, cls, weight, f_green, f_orange, f_red, f_darkred, coverage,
-vc_ratio, n_samples, source`. `complete.csv` adds `method`: observed,
-neighbours, neighbours_demoted or zone_blended. A `.meta.json` beside each
+vc_ratio, n_samples, source`. `complete.csv` adds `method` (observed,
+adjacent, spread or assumed_clear) and `hops`, the junctions between a road
+and the painted road its colour came from (0 observed, -1 none). Every weight
+is exactly 25, 55, 85 or 105. A `.meta.json` beside each
 table records the `graph_id` its edge ids belong to; readers refuse a mismatch.
 
 Layer index, `output/layers/index.json`:

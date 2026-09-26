@@ -57,6 +57,12 @@ function addTraffic() {
    arrive; removing and re-adding left frames with no capture at all. */
 export function syncTrafficTiles() {
   if (!styleReady() || !state.capture) return;
+  // A hidden layer is left alone: swapping its source reloads it, and during
+  // play that happened on every step for a layer nobody could see (three
+  // reload events a step, most of each step's time). applyTraffic catches it
+  // up to the capture on show when the layer is switched back on.
+  if (!state.traffic.show) { state.traffic.behind = true; return; }
+  state.traffic.behind = false;
   const src = attempt("getSource traffic", () => map.getSource("traffic"));
   if (!src) { ensureLayers(); return; }
   const url = trafficUrl(state.capture);
@@ -96,6 +102,7 @@ export function applyBase() {
 }
 
 export function applyTraffic() {
+  if (state.traffic.show && state.traffic.behind) syncTrafficTiles();
   setLayout("traffic", "visibility", state.traffic.show ? "visible" : "none");
   setPaint("traffic", "raster-opacity", clamp(finite(state.traffic.opacity, 1), 0, 1));
 }

@@ -13,6 +13,7 @@ import {
   $, DEFAULTS, LADDER, MINOR_FADE, PARTS, RAMP, T, attempt, clamp, escapeHtml,
   finite, layerId, map, note, sourceId, state, warn,
 } from "./core.js";
+import { loadFrameIndex, renderModelInfo, repaint, setVisibilityHook } from "./frames.js";
 import { SITE, STATIC, apiJson } from "./api.js";
 import {
   ensureLayers, hasLayer, hasSource, registerLayers, setLayout, setPaint,
@@ -26,10 +27,18 @@ export const modelUrl = (part) => STATIC
    Every read has a fallback, so a feature missing a field still draws. */
 
 const num = (key, fallback) => ["to-number", ["coalesce", ["get", key], fallback], fallback];
+/* A value that changes from capture to capture: the frame on show sets it as
+   feature state; the shipped geometry's own value is the fallback. */
+const live = (key, fallback) =>
+  ["to-number", ["coalesce", ["feature-state", key], ["get", key], fallback], fallback];
+
+/** Whether the model roads should be drawn at all. A capture that has not
+    been processed has no model, so none is drawn rather than another one. */
+export const modelVisible = () => state.model.show && !(state.frames.v && state.frames.hidden);
 
 export function remapWeight() {
   const w = state.weights;
-  return ["interpolate", ["linear"], num("w", LADDER[0]),
+  return ["interpolate", ["linear"], live("w", LADDER[0]),
     LADDER[0], finite(w.g, DEFAULTS.g), LADDER[1], finite(w.o, DEFAULTS.o),
     LADDER[2], finite(w.r, DEFAULTS.r), LADDER[3], finite(w.d, DEFAULTS.d)];
 }
@@ -68,7 +77,7 @@ export function colourExpr() {
     return ["interpolate", ["linear"], ["/", num("f", 30), delayExpr()],
       5, RAMP[3], 12, RAMP[2], 25, RAMP[1], 45, RAMP[0]];
   }
-  return ["interpolate", ["linear"], num("w", LADDER[0]),
+  return ["interpolate", ["linear"], live("w", LADDER[0]),
     LADDER[0], RAMP[0], LADDER[1], RAMP[1], LADDER[2], RAMP[2], LADDER[3], RAMP[3]];
 }
 function widthExpr(minor) {
@@ -87,8 +96,14 @@ function widthExpr(minor) {
 function opacityExpr(part) {
   const base = clamp(finite(state.model.opacity, 1), 0, 1) * clamp(state.model.intro[part], 0, 1);
   let perFeature = state.dimPredicted
-    ? ["case", ["==", num("s", 1), 0], base, base * 0.55]
+    ? ["case", ["==", live("s", 1), 0], base, base * 0.55]
     : base;
+  // Observed / Predicted: which roads count changes with every capture, and
+  // filters cannot read feature state, so the other kind is faded out instead.
+  if (state.model.which !== "all") {
+    const keep = state.model.which === "observed" ? 0 : 1;
+    perFeature = ["case", ["==", live("s", 1), keep], perFeature, 0];
+  }
 
   const progress = clamp(state.model.reveal[part], 0, 1);
   if (progress < 1) {
@@ -106,11 +121,7 @@ function opacityExpr(part) {
   return perFeature;
 }
 function modelFilter() {
-  const f = ["all", ["<=", num("h", 6), state.minCls]];
-  if (state.model.which !== "all") {
-    f.push(["==", num("s", 1), state.model.which === "observed" ? 0 : 1]);
-  }
-  return f;
+  return ["all", ["<=", num("h", 6), state.minCls]];
 }
 const minzoomFor = (part) => (part === "minor" && state.lodMinor ? MINOR_FADE[0] - 0.2 : 0);
 
@@ -121,9 +132,12 @@ function addModelPart(part) {
   if (!hasSource(sourceId(part))) {
     // maxzoom 14 keeps client-side tiling cheap; lines stay crisp above it
     // because vectors are re-projected, not resampled.
+    // promoteId: frames address lines by `n`, their fixed line number
     map.addSource(sourceId(part), { type: "geojson", data: modelUrl(part),
-      maxzoom: 14, buffer: 32, tolerance: 0.375 });
+      maxzoom: 14, buffer: 32, tolerance: 0.375, promoteId: "n" });
     added = true;
+    // a new source starts with no feature state: paint the current frame in full
+    setTimeout(repaint, 0);
   }
   if (!hasLayer(layerId(part))) {
     const firstShow = !state.model.revealed[part];
@@ -131,7 +145,7 @@ function addModelPart(part) {
     map.addLayer({ id: layerId(part), type: "line", source: sourceId(part),
       minzoom: minzoomFor(part), filter: modelFilter(),
       layout: { "line-cap": "round", "line-join": "round",
-                visibility: state.model.show ? "visible" : "none" },
+                visibility: modelVisible() ? "visible" : "none" },
       paint: { "line-color": colourExpr(), "line-width": widthExpr(part === "minor"),
                "line-opacity": opacityExpr(part) } });
     added = true;
@@ -147,7 +161,7 @@ export function applyModel() {
   for (const part of PARTS) {
     const id = layerId(part);
     if (!hasLayer(id)) continue;
-    setLayout(id, "visibility", state.model.show ? "visible" : "none");
+    setLayout(id, "visibility", modelVisible() ? "visible" : "none");
     attempt(`zoomRange ${id}`, () => map.setLayerZoomRange(id, minzoomFor(part), 24));
   }
   applyModelOpacity();
@@ -304,7 +318,10 @@ export function applyModelInfo(m, { boot = false } = {}) {
       `${Number(m.lines || 0).toLocaleString()} roads · ${Number(m.observed || 0).toLocaleString()} observed (${pct}%) · ` +
       `${Number(m.predicted || 0).toLocaleString()} predicted<br>` +
       `${Number(m.edges || 0).toLocaleString()} directed edges · ${((m.bytes || 0) / 1048576).toFixed(1)} MB from ${escapeHtml(m.weights || "")}`;
-    $("modelInfo").innerHTML = state.model.summary + (m.stale && m.error
+    // with frames, the words under the switch describe the capture on show
+    // (frames.js); the whole-file summary is only the fallback without them
+    if (state.frames.v) renderModelInfo();
+    else $("modelInfo").innerHTML = state.model.summary + (m.stale && m.error
       ? `<br><span class="warn">Serving the last complete data: ${escapeHtml(m.error)}</span>` : "");
     controls.forEach((id) => { if ($(id)) $(id).disabled = false; });
     document.querySelectorAll("#modelWhich button, #colourBy button").forEach((b) => { b.disabled = false; });
@@ -335,7 +352,11 @@ export function refreshModelData() {
     attempt(`setData ${part}`, () => map.getSource(sourceId(part)).setData(modelUrl(part)));
   }
   note("data-refresh", { version: state.model.version });
+  // the line list may have changed with the data: re-read it, then repaint
+  loadFrameIndex().then(repaint);
 }
+
+setVisibilityHook(() => applyModel());
 
 registerLayers({
   build: () => {

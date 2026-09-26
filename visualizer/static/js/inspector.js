@@ -26,7 +26,15 @@ function rampColour(w) {
   return RAMP[i < 0 ? RAMP.length - 1 : i];
 }
 
-function showRoad(p) {
+/* A road's weight and source for the capture on show come from its feature
+   state, set by the frame; the geometry's own values belong to the one capture
+   the shapes file was built from. Coverage and the other direction are only
+   known for that capture, so they are left out for any other rather than
+   shown as if they were this one's. */
+function showRoad(p, st = {}) {
+  const fromFrame = st.w !== undefined;
+  const ownCapture = !fromFrame || state.frames.shown === state.frames.base;
+  p = { ...p, w: fromFrame ? st.w : p.w, s: fromFrame ? st.s : p.s };
   const base = finite(Number(p.w), LADDER[0]);
   const { weight, delay } = delayAt(base);
   const free = finite(Number(p.f), 30);
@@ -36,10 +44,10 @@ function showRoad(p) {
      <dl>
        <dt>Source</dt><dd><span class="tag">${Number(p.s) === 0 ? "observed" : "predicted"}</span></dd>
        <dt>Weight</dt><dd>${base.toFixed(0)}${changed ? ` → ${weight.toFixed(0)}` : ""}</dd>
-       ${p.wb !== undefined ? `<dt>Other way</dt><dd>${Number(p.wb).toFixed(0)}` +
+       ${ownCapture && p.wb !== undefined ? `<dt>Other way</dt><dd>${Number(p.wb).toFixed(0)}` +
           `${p.sb ? ' <span class="tag">predicted</span>' : ""}</dd>` : ""}
        <dt>v/c ratio</dt><dd>${(weight / 100).toFixed(2)}</dd>
-       <dt>Coverage</dt><dd>${(finite(Number(p.c), 0) * 100).toFixed(0)}%</dd>
+       ${ownCapture ? `<dt>Coverage</dt><dd>${(finite(Number(p.c), 0) * 100).toFixed(0)}%</dd>` : ""}
        <dt>Free flow</dt><dd>${free.toFixed(0)} km/h</dd>
        <dt>Slowdown</dt><dd>${delay.toFixed(2)}x</dd>
        <dt>Effective</dt><dd>${(free / delay).toFixed(0)} km/h</dd>
@@ -72,7 +80,13 @@ map.on("click", (e) => {
   if (nodeHit) { showJunction(nodeHit.properties || {}); return; }
   const layers = PARTS.map(layerId).filter(hasLayer);
   if (!layers.length) return;
-  const hits = attempt("inspect query", () => map.queryRenderedFeatures(box, { layers })) || [];
+  let hits = attempt("inspect query", () => map.queryRenderedFeatures(box, { layers })) || [];
+  // Observed / Predicted fades the other kind out rather than filtering it,
+  // so skip roads that are there but not drawn
+  if (state.model.which !== "all") {
+    const keep = state.model.which === "observed" ? 0 : 1;
+    hits = hits.filter((h) => Number(((h.state || {}).s ?? (h.properties || {}).s)) === keep);
+  }
   if (!hits.length) { $("inspect").hidden = true; return; }
-  showRoad(hits[0].properties || {});
+  showRoad(hits[0].properties || {}, hits[0].state || {});
 });

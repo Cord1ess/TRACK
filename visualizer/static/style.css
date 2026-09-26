@@ -13,6 +13,8 @@
   --text-3: #9a9aa0;
   --accent: #0071e3;
   --on: #34c759;
+  --done: #2563eb;          /* a capture TRACK has processed */
+  --todo: #9333ea;          /* one it has not */
   --knob: #ffffff;
   --shadow: 0 1px 2px rgba(0, 0, 0, .06), 0 6px 20px rgba(0, 0, 0, .10);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, .10);
@@ -31,6 +33,8 @@ body.dark {
   --text-3: #6b6b70;
   --accent: #0a84ff;
   --on: #30d158;
+  --done: #3b82f6;
+  --todo: #a855f7;
   --knob: #ffffff;
   --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 8px 24px rgba(0, 0, 0, .55);
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, .5);
@@ -165,6 +169,11 @@ body.dock-hidden #dock { transform: translateX(calc(100% + 20px)); opacity: 0; p
 .hint { margin: 6px 0 0; font-size: 11.5px; line-height: 1.45; color: var(--text-3); }
 .hint b { color: var(--text-2); font-weight: 600; }
 .hint .warn { color: #b3700f; font-weight: 600; }
+.grouphead.second { margin-top: 14px; }
+.hint.facts { color: var(--text-2); }
+.hint .lv, #stopPop .lv { display: inline-flex; align-items: center; gap: 4px; margin-right: 8px;
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
+.hint .lv i, #stopPop .lv i { width: 9px; height: 3px; border-radius: 2px; display: inline-block; }
 body.dark .hint .warn { color: #f0a646; }
 
 .rows { display: flex; flex-direction: column; gap: 9px; margin-top: 11px; }
@@ -227,6 +236,10 @@ body.dock-hidden #legend { right: 12px; }
 .tlhead { display: flex; align-items: center; gap: 10px; padding-left: 5px; }
 .tlbody { display: flex; align-items: center; gap: 12px; }
 .tlcount { font-size: 10.5px; color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tlcount .key { display: inline-flex; align-items: center; gap: 5px; margin-right: 10px; }
+.tlcount .key i, #stopPop .dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; }
+.tlcount .key i.done, #stopPop .dot.done { background: var(--done); }
+.tlcount .key i.todo, #stopPop .dot.todo { background: var(--todo); }
 #playSpeed button { padding: 3px 7px; font-size: 10.5px; }
 /* the stretch of the week a timeline actually covers, so an empty run reads
    as empty rather than as a track that simply has not been scrolled */
@@ -265,10 +278,18 @@ body.dark #timeline .play:hover { filter: brightness(1.3); }
   content: ""; position: absolute; left: -4px; right: -4px; top: -6px; bottom: -8px;
 }
 .track .marks i:hover { height: 16px; filter: brightness(1.25); }
-.track .marks i.here { height: 18px; background: var(--text); }
-/* a gap in the sequence: the thing the research cannot have */
-.track .marks i.gap { background: #e5484d; opacity: .5; height: 7px; }
-.track .marks i.warn { background: #f5a524; }
+.track .marks i.done { background: var(--done); }
+.track .marks i.todo { background: var(--todo); }
+.track .marks i.todo.stale { opacity: .55; }          /* processed by the old model */
+.track .marks i.here { height: 18px; background: var(--text); opacity: 1; }
+/* a gap in the sequence, the thing the research cannot have, and a capture
+   that did not come out whole: a dot above the mark, so its colour still says
+   whether it is processed */
+.track .marks i.gap::after, .track .marks i.warn::after {
+  content: ""; position: absolute; left: -1px; top: -6px; width: 5px; height: 5px;
+  border-radius: 50%; background: #e5484d;
+}
+.track .marks i.warn::after { background: #f5a524; }
 .track .head {
   position: absolute; top: 0; bottom: 0; width: 2px; background: var(--text);
   transform: translateX(-1px); pointer-events: none;
@@ -378,17 +399,27 @@ body.dark .collect:hover { filter: brightness(1.25); }
 @media (max-width: 1100px) { .collect .chint, .collect .cbar { display: none; } }
 @keyframes run-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 
-/* ── one capture's details, opened by clicking its mark ────────────────── */
-#stopCard {
-  margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: var(--inset);
-  border: 1px solid var(--border-soft); position: relative; font-size: 11px;
+/* ── one capture's details: a popup above its mark ─────────────────────── */
+#stopPop {
+  position: fixed; z-index: 40; width: 290px; padding: 10px 12px 9px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 11px;
+  box-shadow: var(--shadow); font-size: 11.5px; color: var(--text);
 }
-#stopCard .row {
-  display: flex; justify-content: space-between; gap: 12px; padding: 2px 0;
+#stopPop[hidden] { display: none !important; }
+#stopPop::after {                 /* the arrow down to the mark */
+  content: ""; position: absolute; bottom: -6px; left: var(--arrow, 50%); width: 10px; height: 10px;
+  margin-left: -5px; background: var(--surface); border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border); transform: rotate(45deg);
 }
-#stopCard .row span { color: var(--text-3); }
-#stopCard .row b { font-weight: 600; font-variant-numeric: tabular-nums; }
-#stopCard .close {
-  position: absolute; top: 4px; right: 4px; width: 20px; height: 20px;
-  font-size: 14px; line-height: 1; border-radius: 4px; background: transparent;
+#stopPop h4 { margin: 0 22px 6px 0; font-size: 12.5px; font-weight: 600; }
+#stopPop .row { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0;
+  border-top: 1px solid var(--border-soft); }
+#stopPop .row > span { color: var(--text-3); white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; }
+#stopPop .row > b { font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
+#stopPop .warn { color: #b3700f; }
+body.dark #stopPop .warn { color: #f0a646; }
+#stopPop .name { margin: 5px 0 0; color: var(--text-3); font-size: 10.5px; font-family: ui-monospace, monospace; }
+#stopPop .close {
+  position: absolute; top: 6px; right: 6px; width: 22px; height: 22px;
+  font-size: 15px; line-height: 1; border-radius: 6px; background: transparent;
 }

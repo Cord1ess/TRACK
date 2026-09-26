@@ -18,6 +18,7 @@ Writes to weights/<capture>.csv.gz in the same dataset. About 2 MB each against
 
 import gzip
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -81,14 +82,31 @@ def main() -> int:
             (cap / "manifest.json").write_bytes(Path(mp).read_bytes())
 
             # decode and impute only: the algorithm layers are for the map, and
-            # the weights are what an analysis over time needs
+            # the weights are what an analysis over time needs.
+            #
+            # One output folder serves capture after capture, so clear both
+            # stage outputs first and force every stage: a leftover
+            # observed.csv from the previous capture is exactly how two local
+            # files came to hold a neighbouring capture's traffic.
+            traffic = REPO_ROOT / "algorithms" / "output" / "traffic"
+            out = traffic / "complete.csv"
+            for stale in (out, traffic / "observed.csv"):
+                stale.unlink(missing_ok=True)
             r = subprocess.run(
                 [sys.executable, "pipeline.py", "--capture", str(cap),
-                 "--only", "decode,impute", "--quick"],
+                 "--only", "decode,impute", "--quick", "--force"],
                 cwd=REPO_ROOT / "algorithms", capture_output=True, text=True, timeout=1200)
-            out = REPO_ROOT / "algorithms" / "output" / "traffic" / "complete.csv"
             if r.returncode != 0 or not out.exists():
                 print(f"  {name}: pipeline failed rc={r.returncode} {r.stderr[-200:]}")
+                failed.append(name)
+                continue
+            # refuse to upload another capture's traffic under this name
+            want = json.loads((cap / "manifest.json").read_text(encoding="utf-8"))["captured_utc"]
+            with out.open(encoding="utf-8") as f:
+                f.readline()
+                got = f.readline().split(",")[0]
+            if got != want:
+                print(f"  {name}: output is from {got}, not {want}; not uploaded")
                 failed.append(name)
                 continue
 

@@ -78,8 +78,17 @@
         <h3>Google capture</h3>
         <label class="switch"><input type="checkbox" id="showTraffic" checked><span></span></label>
       </div>
-      <p class="hint" id="capInfo">no captures found</p>
+      <p class="hint facts" id="capInfo">no captures found</p>
+      <div class="grouphead second">
+        <h3>TRACK model</h3>
+        <label class="switch"><input type="checkbox" id="showModel"><span></span></label>
+      </div>
+      <p class="hint facts" id="modelInfo">checking…</p>
       <p class="hint" id="collectInfo"></p>
+    </div>
+
+    <div class="group">
+      <div class="grouphead"><h3>Google capture options</h3></div>
       <div class="rows">
         <div class="row"><span>Pure colours</span>
           <label class="switch sm"><input type="checkbox" id="pure" checked><span></span></label>
@@ -91,11 +100,7 @@
     </div>
 
     <div class="group">
-      <div class="grouphead">
-        <h3>TRACK model</h3>
-        <label class="switch"><input type="checkbox" id="showModel"><span></span></label>
-      </div>
-      <p class="hint" id="modelInfo">checking…</p>
+      <div class="grouphead"><h3>TRACK model options</h3></div>
       <div class="rows">
         <div class="seg full" id="modelWhich">
           <button data-which="all" class="on">All</button>
@@ -300,7 +305,9 @@
       <button data-speed="0.5">0.5x</button>
       <button data-speed="1" class="on">1x</button>
       <button data-speed="2">2x</button>
-      <button data-speed="4">4x</button>
+      <button data-speed="5">5x</button>
+      <button data-speed="10">10x</button>
+      <button data-speed="20">20x</button>
     </div>
   </div>
   <div class="tlbody">
@@ -318,7 +325,6 @@
       <span id="slotState">no data</span>
     </div>
   </div>
-  <div id="stopCard" hidden></div>
 </div>
 
 <!-- ───────────────────────── status + inspector ───────────────────────── -->

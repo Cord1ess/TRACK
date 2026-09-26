@@ -16,7 +16,7 @@ import {
 import { applyGraph, applyBreath, graphExprs, syncBreathing } from "./graph.js";
 import { applyLayerOpacity } from "./layers.js";
 import { selectCapture } from "./captures.js";
-import { setSpeed, stepCapture, togglePlay, zoomAt, zoomReset } from "./timeline.js";
+import { followCapture, setSpeed, stepCapture, togglePlay, zoomAt, zoomReset } from "./timeline.js";
 import { setInspect } from "./inspector.js";
 import { setTheme } from "./theme.js";
 import { renderReadouts } from "./legend.js";
@@ -149,7 +149,7 @@ export function bindControls() {
   $("inspectBtn").onclick = () => setInspect(!state.inspect);
   $("inspectClose").onclick = () => { $("inspect").hidden = true; };
 
-  $("capture").onchange = (e) => selectCapture(e.target.value, true);
+  $("capture").onchange = (e) => { selectCapture(e.target.value, true); followCapture(e.target.value); };
   $("showTraffic").onchange = (e) => { state.traffic.show = e.target.checked; applyTraffic(); };
   $("pure").onchange = (e) => { state.traffic.pure = e.target.checked; syncTrafficTiles(); };
   $("opacity").oninput = (e) => {

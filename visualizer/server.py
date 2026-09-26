@@ -19,6 +19,10 @@ slippy-map tile layer instead of a screenshot:
                                             and <capture>/layers (algorithm outputs)
     GET /layers/<relative path>.geojson     one layer
     GET /api/model                          what TRACK's own traffic data looks like
+    GET /api/frames[?parts=1]               which captures are processed, and the line list
+                                            version their frames are built against
+    GET /frame/<name>?v=<version>           one processed capture's colours, one character
+                                            per map line, so the timeline can play the model
     GET /api/graph                          the road graph itself: junction and edge counts
     GET /graph.geojson[?part=nodes|links]   junctions as points, directed edges as lines,
                                             for looking at the network A* actually walks
@@ -32,6 +36,7 @@ Zero dependencies beyond Pillow + numpy. No keys anywhere.
 """
 
 import argparse
+import gzip
 import hashlib
 import io
 import json
@@ -57,6 +62,7 @@ OUTPUT = (HERE.parent / "algorithms" / "output").resolve()
 MIN_ZOOM = 8   # lowest zoom the server will build; the UI reads it from /api/config
 MODEL: "model_mod.ModelData | None" = None   # TRACK's own decoded + predicted traffic
 GRAPH: "graph_mod.GraphData | None" = None   # the road graph: junctions and directed edges
+WEIGHTS: "Path | None" = None                # processed weight tables, <capture>.csv.gz
 
 _LOCK = threading.Lock()
 
@@ -152,17 +158,126 @@ def clean_tile(data: bytes) -> bytes:
 
 # ---------------------------------------------------------------- captures
 
+# A capture is processed when its weight table, from the CURRENT model, is in
+# WEIGHTS/<name>.csv.gz. The current model writes a `hops` column; a table
+# without one came from the old blending model and must be run again, so it is
+# reported as stale rather than processed.
+_header_cache: dict[str, tuple[int, bool]] = {}
+
+
+def _current_model(path: Path) -> bool:
+    try:
+        mt = path.stat().st_mtime_ns
+    except OSError:
+        return False
+    hit = _header_cache.get(str(path))
+    if hit and hit[0] == mt:
+        return hit[1]
+    try:
+        ok = "hops" in model_mod.weights_header(path)
+    except Exception:
+        ok = False
+    _header_cache[str(path)] = (mt, ok)
+    return ok
+
+
+_base_cache: dict = {}
+
+
+def base_capture_slot() -> str:
+    """captured_utc of the capture the served model was built from."""
+    if not MODEL:
+        return ""
+    path = MODEL.csv_path
+    try:
+        mt = path.stat().st_mtime_ns
+    except OSError:
+        return ""
+    if _base_cache.get("mt") != mt:
+        slot = ""
+        try:
+            with path.open(encoding="utf-8") as f:
+                head = f.readline().strip().split(",")
+                slot = f.readline().split(",")[head.index("slot_utc")]
+        except Exception:
+            pass
+        _base_cache.update(mt=mt, slot=slot, current=_current_model(path))
+    return _base_cache["slot"] if _base_cache.get("current") else ""
+
+
+def processed_index(caps: list[dict]) -> tuple[dict, set]:
+    """{name: weight table path} for captures processed by the current model,
+    and the names whose table came from the old one."""
+    done, stale = {}, set()
+    if WEIGHTS and WEIGHTS.exists():
+        names = {c["name"] for c in caps}
+        for f in WEIGHTS.glob("*.csv.gz"):
+            n = f.name[:-len(".csv.gz")]
+            if n not in names:
+                continue
+            if _current_model(f):
+                done[n] = f
+            else:
+                stale.add(n)
+    slot = base_capture_slot()
+    if slot:
+        for c in caps:
+            if c.get("captured_utc") == slot and c["name"] not in done:
+                done[c["name"]] = MODEL.csv_path
+                stale.discard(c["name"])
+    return done, stale
+
+
+_manifest_cache: dict[str, tuple[int, dict]] = {}
+
+
+def _manifest(mp: Path) -> dict | None:
+    """A capture's manifest, parsed once and kept until the file changes. With
+    a week of captures, re-reading 1,190 files on every poll and every frame
+    request was the slowest thing the server did."""
+    try:
+        mt = mp.stat().st_mtime_ns
+    except OSError:
+        return None
+    hit = _manifest_cache.get(str(mp))
+    if hit and hit[0] == mt:
+        return hit[1]
+    try:
+        m = json.loads(mp.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    _manifest_cache[str(mp)] = (mt, m)
+    return m
+
+
+def frame_source(name: str) -> Path | None:
+    """The weight table a capture's frame is built from, found directly. Going
+    through list_captures() for this re-listed 1,190 folders on every frame
+    request, which held playback at 7 captures a second."""
+    if not name or "/" in name or "\\" in name or ".." in name:
+        return None                              # a name, never a path
+    if WEIGHTS:
+        f = WEIGHTS / f"{name}.csv.gz"
+        if f.is_file() and _current_model(f):
+            return f
+    slot = base_capture_slot()
+    if slot:
+        m = _manifest(CAPTURES / name / "manifest.json")
+        if m and m.get("captured_utc") == slot:
+            return MODEL.csv_path
+    return None
+
+
 def list_captures() -> list[dict]:
     out = []
     if not CAPTURES.exists():
         return out
     for d in sorted(CAPTURES.iterdir()):
         mp = d / "manifest.json"
-        if not d.is_dir() or not mp.exists():
+        if not d.is_dir():
             continue
-        try:
-            m = json.loads(mp.read_text(encoding="utf-8"))
-        except Exception:
+        m = _manifest(mp)
+        if m is None:
             continue
         out.append({
             "name": d.name, "zoom": m.get("zoom"), "bbox": m.get("bbox"),
@@ -174,7 +289,80 @@ def list_captures() -> list[dict]:
             "tiles_nonempty": m.get("tiles_nonempty"), "expected_tiles": m.get("expected_tiles"),
             "note": m.get("note", ""),
         })
+    done, stale = processed_index(out)
+    for c in out:
+        c["processed"] = c["name"] in done
+        c["stale"] = c["name"] in stale
     return out
+
+
+# ── frames: each processed capture's colours, built once and kept ────────────
+FRAMES: dict[str, tuple] = {}         # name -> (source mtime, lines version, gzipped JSON)
+_frame_lock = threading.Lock()
+_warm = {"running": False}
+
+
+def frames_dir() -> Path:
+    """Where built frames are kept between runs: beside the weight tables."""
+    root = WEIGHTS if WEIGHTS and WEIGHTS.exists() else OUTPUT
+    return root / "_frames"
+
+
+def frame_bytes(name: str, path: Path) -> bytes | None:
+    """Gzipped frame JSON for a processed capture, from memory, then disk,
+    then built. Building one takes about 0.2 s, so without the disk copy a
+    restart meant four minutes of slow playback over a week of captures."""
+    version, _, _ = MODEL.line_info()
+    try:
+        mt = path.stat().st_mtime_ns
+    except OSError:
+        return None
+    hit = FRAMES.get(name)
+    if hit and hit[0] == mt and hit[1] == version:
+        return hit[2]
+    with _frame_lock:
+        hit = FRAMES.get(name)
+        if hit and hit[0] == mt and hit[1] == version:
+            return hit[2]
+        # named by the line list and the source's mtime, so a changed table or
+        # a rebuilt graph can never be served an old frame
+        disk = frames_dir() / f"{name}.{version}.{mt}.json.gz"
+        try:
+            data = disk.read_bytes()
+        except OSError:
+            fr = MODEL.frame(path)
+            fr["name"] = name
+            data = gzip.compress(json.dumps(fr, separators=(",", ":")).encode("utf-8"), 6, mtime=0)
+            try:
+                disk.parent.mkdir(parents=True, exist_ok=True)
+                for old in disk.parent.glob(f"{name}.*.json.gz"):
+                    old.unlink(missing_ok=True)       # superseded copies
+                tmp = disk.with_suffix(".tmp")
+                tmp.write_bytes(data)
+                tmp.replace(disk)                     # never a half-written file
+            except OSError:
+                pass                                  # a cache, not a requirement
+        FRAMES[name] = (mt, version, data)
+        return data
+
+
+def warm_frames(done: dict) -> None:
+    """Build every missing frame in the background, oldest first, so playback
+    never waits on the server. One worker at a time."""
+    if _warm["running"]:
+        return
+    _warm["running"] = True
+
+    def run():
+        try:
+            for name in sorted(done):
+                try:
+                    frame_bytes(name, done[name])
+                except Exception as e:
+                    print(f"  frame for {name} failed: {type(e).__name__}: {e}", flush=True)
+        finally:
+            _warm["running"] = False
+    threading.Thread(target=run, daemon=True).start()
 
 
 @lru_cache(maxsize=64)
@@ -360,6 +548,38 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, data, "application/geo+json", cache, encoding="gzip",
                        headers={"ETag": etag})
 
+    def _frames_index(self, query: str) -> None:
+        caps = list_captures()
+        done, stale = processed_index(caps)
+        version, count, parts = MODEL.line_info() if MODEL else ("", 0, "")
+        if version:
+            warm_frames(done)
+        slot = base_capture_slot()
+        base = next((c["name"] for c in caps if slot and c.get("captured_utc") == slot), "")
+        body = {"v": version, "lines": count, "base": base,
+                "processed": sorted(done), "stale": sorted(stale),
+                "ready": sorted(n for n in done if n in FRAMES and FRAMES[n][1] == version)}
+        if "parts=1" in (query or ""):
+            body["parts"] = parts
+        self._json(body)
+
+    def _frame(self, name: str, query: str) -> None:
+        if not MODEL or not MODEL.line_info()[0]:
+            self._json({"error": "no model data"}, 503)
+            return
+        src = frame_source(name)
+        if src is None:
+            self._json({"error": f"{name} is not processed"}, 404)
+            return
+        data = frame_bytes(name, src)
+        if data is None:
+            self._json({"error": "weight table unreadable"}, 500)
+            return
+        asked = (parse_qs(query or "").get("v") or [""])[0]
+        version = MODEL.line_info()[0]
+        cache = "public, max-age=31536000, immutable" if asked == version else "no-cache"
+        self._send(200, data, "application/json", cache, encoding="gzip")
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
@@ -396,6 +616,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(MODEL.info() if MODEL else {"ready": False, "error": "not configured"})
             elif path == "/model.geojson":
                 self._vector(MODEL, parsed.query, "all")
+            elif path == "/api/frames":
+                self._frames_index(parsed.query)
+            elif path.startswith("/frame/"):
+                self._frame(path[len("/frame/"):], parsed.query)
             elif path == "/api/graph":
                 self._json(GRAPH.info() if GRAPH else {"ready": False, "error": "not configured"})
             elif path == "/graph.geojson":
@@ -420,14 +644,18 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    global CAPTURES, OUTPUT, MODEL, GRAPH
+    global CAPTURES, OUTPUT, MODEL, GRAPH, WEIGHTS
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--captures", type=Path, default=CAPTURES)
     ap.add_argument("--output", type=Path, default=OUTPUT)
+    ap.add_argument("--weights", type=Path,
+                    help="processed weight tables, <capture>.csv.gz "
+                         "(default: a 'weights' folder beside the captures)")
     ap.add_argument("--build-pyramid", metavar="CAPTURE", help="pre-build lower zooms for a capture and exit")
     args = ap.parse_args()
     CAPTURES, OUTPUT = args.captures.resolve(), args.output.resolve()
+    WEIGHTS = (args.weights or CAPTURES.parent / "weights").resolve()
     capture_zoom.cache_clear()
     MODEL = model_mod.discover(OUTPUT)
     GRAPH = graph_mod.discover(OUTPUT)
@@ -449,6 +677,8 @@ def main() -> int:
     print(f"\n  TRACK visualizer  ->  http://127.0.0.1:{args.port}", flush=True)
     print(f"  captures: {', '.join(c['name'] for c in caps) or 'none'}  ({CAPTURES})", flush=True)
     print(f"  layers:   {len(list_layers())} geojson  ({OUTPUT})", flush=True)
+    done, stale = processed_index(caps)
+    print(f"  weights:  {len(done)} processed, {len(stale)} from the old model  ({WEIGHTS})", flush=True)
     mi = MODEL.info()
     if mi.get("ready"):
         print(f"  model:    {mi['edges']} edges -> {mi['lines']} lines "

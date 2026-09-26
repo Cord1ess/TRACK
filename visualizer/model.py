@@ -5,6 +5,12 @@
     GET /model.geojson?part=minor      everything smaller    (the bulk)
     GET /model.geojson                 both at once
 
+Every line also carries `n`, its fixed position in the line list. The shapes
+never change from one capture to the next, only the colours, so the map loads
+the shapes once and each capture after that is a FRAME: one character per line
+(`frame()` below), about 15 KB compressed against 1.6 MB for the full geometry.
+That is what lets the timeline play the model at 20x without re-sending a city.
+
 Why vectors and not rendered tiles
 ----------------------------------
 The weights and the slowdown curve are things to tune, and tuning is only useful
@@ -29,6 +35,7 @@ is never hidden behind a clear direction.
 
 Each feature carries the raw ingredients rather than a colour:
 
+    n  line number, fixed for the graph: frames address lines by it
     i  edge id of the direction `w` came from
     o  reveal order, 0 on the arterial network rising to 1 far out in the
        side streets, so the map can grow the network outward rather than
@@ -73,10 +80,13 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
+import numpy as np
+
 CLASS_ORDER = ["motorway", "trunk", "primary", "secondary", "tertiary",
                "unclassified", "residential", "living_street", "service"]
 MAJOR_MAX_RANK = 4          # motorway .. tertiary
 COORD_DP = 5                # ~1.1 m, finer than the traffic lines we decoded
+LEVELS = np.asarray([25.0, 55.0, 85.0, 105.0])
 REVEAL_SPAN_M = 1200.0      # distance from a main road at which reveal order reaches 1
 
 
@@ -130,6 +140,12 @@ class ModelData:
         self.build_lock = threading.Lock()    # at most one build at a time
         self.payloads: dict[str, bytes] = {}  # gzipped GeoJSON per part, always complete
         self.counts: dict = {}
+        # Per line: the edge ids drawn by it, first-seen first, -1 padded; which
+        # part (major "0" / minor "1") holds it; and a hash of both. Frames are
+        # only valid for the line list they were built against.
+        self.lines = np.zeros((0, 1), dtype=np.int64)
+        self.parts = ""
+        self.lines_version = ""
         self.version = ""                     # content hash of the published payloads
         self.stamp = None                     # input mtimes the published payloads were built from
         self.seen = None                      # input mtimes seen on the latest request
@@ -197,7 +213,7 @@ class ModelData:
         with self.lock:
             self.building = True
         try:
-            payloads, counts = self._build()
+            payloads, counts, lines, parts = self._build()
             if self._stamp() != st:
                 raise RuntimeError("inputs changed while being read; retrying once they settle")
             digest = hashlib.sha1()
@@ -205,6 +221,9 @@ class ModelData:
                 digest.update(payloads[part])
             with self.lock:
                 self.payloads, self.counts = payloads, counts
+                self.lines, self.parts = lines, parts
+                lv = hashlib.sha1(lines.tobytes() + parts.encode("ascii"))
+                self.lines_version = lv.hexdigest()[:12]
                 self.version, self.stamp, self.error = digest.hexdigest()[:12], st, ""
             self._failed = None
             self._pending = None
@@ -247,6 +266,7 @@ class ModelData:
         # collapse each two-way pair into one drawn line, keeping both weights
         pairs: dict[tuple, dict] = {}
         order: list[tuple] = []
+        members: dict[tuple, list] = {}       # every edge id a line draws, in the order seen
         for e in g["edges"]:
             eid = int(e["id"])
             r = rows.get(eid)
@@ -262,6 +282,7 @@ class ModelData:
                    "h": class_rank(e.get("highway", "")),
                    "f": float(e.get("free_flow_kmph", 30) or 30), "far": far}
             prev = pairs.get(key)
+            members.setdefault(key, []).append(eid)
             if prev is None:
                 pairs[key] = rec
                 order.append(key)
@@ -282,13 +303,13 @@ class ModelData:
 
         feats_major, feats_minor = [], []
         observed = 0
-        for key in order:
+        for n, key in enumerate(order):
             rec = pairs[key]
             other = rec.get("other")
             # rec is the measured direction whenever either direction was measured
             observed += rec["obs"]
             props = {
-                "i": rec["id"], "w": round(rec["w"], 1), "s": 0 if rec["obs"] else 1,
+                "n": n, "i": rec["id"], "w": round(rec["w"], 1), "s": 0 if rec["obs"] else 1,
                 "c": round(max(rec["c"], other["c"] if other else 0), 2),
                 "h": rec["h"], "f": round(rec["f"], 1),
                 "o": 0.0 if rec["h"] <= MAJOR_MAX_RANK
@@ -308,6 +329,12 @@ class ModelData:
         if not order:
             raise ValueError("no edge ids in common between the graph and the weight table")
 
+        width = max(len(members[k]) for k in order)
+        lines = np.full((len(order), width), -1, dtype=np.int64)
+        for n, key in enumerate(order):
+            lines[n, :len(members[key])] = members[key]
+        parts = "".join("0" if pairs[k]["h"] <= MAJOR_MAX_RANK else "1" for k in order)
+
         payloads: dict[str, bytes] = {}
         for part, feats in (("major", feats_major), ("minor", feats_minor),
                             ("all", feats_major + feats_minor)):
@@ -325,7 +352,7 @@ class ModelData:
             "bytes": len(payloads["all"]),
             "bytes_major": len(payloads["major"]),
         }
-        return payloads, counts
+        return payloads, counts, lines, parts
 
     def payload(self, part: str = "all") -> tuple[bytes | None, str]:
         """(gzipped GeoJSON, version), both from one consistent snapshot."""
@@ -334,6 +361,51 @@ class ModelData:
             if not self.payloads:
                 return None, ""
             return self.payloads.get(part if part in self.payloads else "all"), self.version
+
+    def line_info(self) -> tuple[str, int, str]:
+        """(lines version, line count, part per line) of the published data."""
+        self.ensure()
+        with self.lock:
+            return self.lines_version, int(self.lines.shape[0]), self.parts
+
+    def frame(self, path: Path) -> dict:
+        """One capture's colours, one character per line in line order.
+
+        Built from that capture's own weight table with the same rule the full
+        payload uses to merge a two-way pair: a measured direction beats a
+        predicted one, then the busier wins, then the first seen. Each character
+        is "0".."7": the level (0 green .. 3 dark red), plus 4 when predicted."""
+        self.ensure()
+        with self.lock:
+            lines, version = self.lines, self.lines_version
+        if not lines.size:
+            raise ValueError("no model data to build frames against")
+        ids, w, obs, slot = read_weights(path)
+        size = int(max(ids.max(initial=0), lines.max(initial=0))) + 1
+        W = np.zeros(size)
+        O = np.zeros(size, dtype=bool)
+        have = np.zeros(size, dtype=bool)
+        W[ids], O[ids], have[ids] = w, obs, True
+        first = lines[:, 0]
+        if not have[first].all():
+            raise ValueError(f"{path.name} is missing roads the map draws: wrong graph?")
+        best_w, best_o = W[first], O[first]
+        for c in range(1, lines.shape[1]):
+            e = lines[:, c]
+            ok = e >= 0
+            ec = np.where(ok, e, first)
+            cw, co = W[ec], O[ec]
+            take = ok & ((co & ~best_o) | ((co == best_o) & (cw > best_w)))
+            best_w = np.where(take, cw, best_w)
+            best_o = np.where(take, co, best_o)
+        level = np.abs(best_w[:, None] - LEVELS[None, :]).argmin(axis=1)
+        codes = (48 + level + 4 * (~best_o)).astype(np.uint8).tobytes().decode("ascii")
+        edge_level = np.abs(w[:, None] - LEVELS[None, :]).argmin(axis=1)
+        return {"v": version, "codes": codes, "stats": {
+            "slot_utc": slot, "edges": int(ids.size), "observed": int(obs.sum()),
+            "predicted": int((~obs).sum()),
+            "levels": [int((edge_level == k).sum()) for k in range(4)],
+            "lines_observed": int(best_o.sum()), "lines": int(lines.shape[0])}}
 
     def geojson(self, part: str = "all") -> bytes | None:
         return self.payload(part)[0]
@@ -346,6 +418,35 @@ class ModelData:
                     "building": self.building, "pending": bool(ok and pending),
                     "error": self.error, "graph": str(self.graph_path),
                     "weights_path": str(self.csv_path), **(self.counts if ok else {})}
+
+
+def read_weights(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, str]:
+    """(edge ids, weights, observed flags, slot_utc) from a weight table,
+    plain or gzipped."""
+    path = Path(path)
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rt", encoding="utf-8", newline="") as f:
+        head = f.readline().strip().split(",")
+        ie, iw, isrc, islot = (head.index(k) for k in ("edge_id", "weight", "source", "slot_utc"))
+        ids, ws, obs, slot = [], [], [], ""
+        for line in f:
+            p = line.rstrip("\r\n").split(",")
+            if len(p) <= max(ie, iw, isrc):
+                continue
+            ids.append(int(p[ie]))
+            ws.append(float(p[iw]))
+            obs.append(p[isrc] == "observed")
+            if not slot:
+                slot = p[islot]
+    return np.asarray(ids, dtype=np.int64), np.asarray(ws), np.asarray(obs, dtype=bool), slot
+
+
+def weights_header(path: Path) -> list[str]:
+    """The column names of a weight table, plain or gzipped."""
+    path = Path(path)
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rt", encoding="utf-8", newline="") as f:
+        return f.readline().strip().split(",")
 
 
 def discover(output_dir: Path) -> ModelData:

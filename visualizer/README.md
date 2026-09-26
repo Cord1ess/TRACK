@@ -6,6 +6,7 @@ The map. Locally a dev server serves it with live data; for GitHub Pages
 ```
 pip install -r requirements.txt
 python server.py                            # http://127.0.0.1:8765
+python server.py --captures ../week1/captures --output ../week1/view   # a week, with weights/ beside it
 python build_site.py --out ../site --keep 12 # the static site
 ```
 
@@ -34,7 +35,7 @@ re-colours as you drag. Colour by Delay or Speed to see it; Level is fixed by
 definition. To bake a setting into the data, re-run the pipeline:
 
 ```
-cd ../algorithms && python pipeline.py --only impute,layers --demote-strength 0.6 --decay-m 180
+cd ../algorithms && python pipeline.py --only impute,layers --hops-per-rung 2
 ```
 
 ## Timeline
@@ -46,11 +47,22 @@ happened on.
 
 It zooms: the wheel narrows the window about the pointer, `+` `−` `All` and a
 double click do the same, and the ticks become hours once the window is under
-eight hours wide. Clicking a mark opens that capture's details — when it was
-taken, the wait since the previous one, coverage, painted tiles and status.
-Play walks the captures at 0.5x to 4x and keeps the head in view when zoomed
-in, shift with the wheel or the arrows steps between them, and dragging lands
-on the nearest one. Red marks are gaps of more than 25 minutes.
+eight hours wide. Marks are blue when TRACK has processed the capture and
+purple when it has not; a table from the old blending model counts as not
+processed. Clicking a mark opens a popup above it: when it was taken, the wait
+since the previous one, Google's tiles and coverage, and TRACK's counts for that
+moment. A red dot marks a gap of more than 25 minutes.
+
+Play runs at 0.5x to 20x. The TRACK model follows the timeline: each processed
+capture shows its own colours, and an unprocessed one shows no model rather
+than another moment's. With only the model on, play keeps the clock: a step
+recolours just the roads that changed (about 5,000 of 60,409 between
+consecutive captures), and at 20x a capture passed between two redraws is
+skipped, never half drawn. Measured on an Intel Arc laptop: 10x and 20x hold
+their speed, the map redraws 12 to 20 times a second, and a paused map matches
+the capture the timeline names road for road. With Google's layer on, each
+step waits for its images, so play runs as fast as they load (about 5
+captures a second). A hidden Google layer is not reloaded while playing.
 
 Two earlier designs broke here, and both are worth remembering. Quantising the
 week into 15-minute slots collapsed twelve captures six minutes apart into five
@@ -62,6 +74,21 @@ last three days, and the fixed Mon..Sun labels named the wrong dates.
 A rebuild of the track clears the play timer and restarts it. Leaving the timer
 running against a replaced list of stops meant `playing` stayed true behind an
 orphaned interval, and pause could not stop it.
+
+## The model through time
+
+The shapes of 60,409 lines never change between captures; only the colours do.
+So the page loads the shapes once and each capture after that is a frame of
+about 6 KB. Frames are built from `<weights>/<capture>.csv.gz` (by default a
+`weights` folder beside the captures) with the same two-way merge the shapes
+use, kept in memory, and saved under `<weights>/_frames/` so a restart has them
+in under a second rather than rebuilding each (0.2 s apiece). `build_site.py
+--weights` publishes them for the static site under `data/frames/`.
+
+The words under the two switches describe the capture on show: Google's tile
+count and coverage, and TRACK's roads read, roads predicted and the colour mix.
+The road inspector reads the capture on show too, and leaves out coverage and
+the other direction for any capture but the one the shapes came from.
 
 ## Live data
 
@@ -127,6 +154,8 @@ regenerate.
 | `GET /model.geojson?part=major\|minor&v=<version>` | the model as gzipped vector features: `w` weight, `s` source, `c` coverage, `h` road class, `f` free-flow km/h, `o` reveal order |
 | `GET /api/graph` | whether the road graph is loaded, its version and counts |
 | `GET /graph.geojson?part=nodes\|links&v=<version>` | the graph as gzipped vector features. Nodes: `n` id, `d` neighbours, `x` cut point, `r` road class. Links: `e` id, `o` one-way, `t` two-way, `r` class, `l` length |
+| `GET /api/frames[?parts=1]` | which captures are processed, the line-list version, and with `parts=1` whether each line is a major or minor road |
+| `GET /frame/<name>?v=<version>` | one processed capture's colours: a string with one character per map line, `0`..`3` green to dark red, plus 4 when predicted, and that capture's counts |
 | `GET /api/layers` | the layer index: id, name, description, legend, summary, url |
 | `GET /layers/<key>` | one layer |
 

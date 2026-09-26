@@ -135,6 +135,14 @@ export const state = {
   },
   weights: { g: 25, o: 55, r: 85, d: 105 }, jam: 4, beta: 4,
   inspect: false, reloading: false, booted: false,
+  // The model through time (frames.js). `v` is the line-list version frames
+  // are built against; empty means the server offers none and the map shows
+  // the single model it was given, as before.
+  frames: {
+    v: "", lines: 0, parts: new Uint8Array(0), base: "", files: null,
+    processed: new Set(), stale: new Set(),
+    current: "", shown: "", hidden: true, lastChanged: 0, lastPaintMs: 0,
+  },
   timeline: {
     start: null,           // midnight Dhaka time on the first capture's day, UTC
     end: null, span: 0, days: 0,

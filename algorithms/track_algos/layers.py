@@ -96,22 +96,24 @@ def decoder_coverage(graph, rows):
 
 def impute_method(graph, by_id):
     """Every road by how its weight was decided."""
-    colours = {"observed": "#374151", "neighbours": "#2563eb",
-               "neighbours_demoted": "#7c3aed", "zone_blended": "#cbd5e1"}
-    labels = {"observed": "read from the tiles", "neighbours": "copied from nearby roads",
-              "neighbours_demoted": "nearby roads, one level quieter", "zone_blended": "zone average"}
+    colours = {"observed": "#374151", "adjacent": "#2563eb",
+               "spread": "#7c3aed", "assumed_clear": "#cbd5e1"}
+    labels = {"observed": "read from the tiles", "adjacent": "touches a painted road: same colour",
+              "spread": "further out: one level milder per junction",
+              "assumed_clear": "not connected to any painted road: clear"}
     counts = {k: 0 for k in colours}
     feats = []
     for e in pairs(graph):
-        m = by_id.get(e.id, {}).get("method", "zone_blended")
+        m = by_id.get(e.id, {}).get("method", "assumed_clear")
         counts[m] = counts.get(m, 0) + 1
         feats.append(feature("LineString", e.geometry, color=colours.get(m, "#cbd5e1"),
                              width=3 if m == "observed" else 1.5, method=m))
     return feats, {
         "name": "Imputation: method", "algorithm": "impute",
-        "description": "How each road got its weight. Google paints about a tenth of the network; "
-                       "the rest is predicted from the nearest observed roads, one level quieter when "
-                       "the road is smaller, fading to a zone average far from any data.",
+        "description": "How each road got its colour. Google paints about a tenth of the network. "
+                       "A road touching a painted road takes its colour; further out it is one level "
+                       "milder per junction crossed; a road with no connection to any painted road "
+                       "is assumed clear.",
         "legend": [{"color": colours[k], "label": labels[k]} for k in colours],
         "summary": ", ".join(f"{counts[k]:,} {labels[k]}" for k in colours),
         "stats": counts}
@@ -146,6 +148,11 @@ def kmeans_zones(graph, tab, weight, observed):
         "stats": {"zones": zones}}
 
 
+def _level(w) -> np.ndarray:
+    """Weight to traffic level 0..3 (green, orange, red, dark red)."""
+    return np.abs(np.asarray(w, dtype=float)[:, None] - np.asarray([25.0, 55.0, 85.0, 105.0])[None, :]).argmin(axis=1)
+
+
 def knn_holdout(graph, tab, weight, observed, cfg):
     """Hidden observed roads, coloured by how far the prediction was from the truth."""
     rng = np.random.default_rng(0)
@@ -155,19 +162,23 @@ def knn_holdout(graph, tab, weight, observed, cfg):
     mask[hide] = False
     pred, _ = predict(tab, np.where(mask, weight, 0.0), mask, cfg, model="knn_demote")
     err = np.abs(pred[hide] - weight[hide])
-    bounds, colours = [5.0, 15.0, 1e9], ["#93c5fd", "#3b82f6", "#1e3a8a"]
+    # Every weight is on the ladder now, so the error that means something is
+    # in levels: right colour, one off, or further. Weight-point bands of 5 and
+    # 15 no longer split anything, since the smallest possible miss is 20.
+    off = np.abs(_level(pred[hide]) - _level(weight[hide]))
+    bounds, colours = [0.5, 1.5, 1e9], ["#93c5fd", "#3b82f6", "#1e3a8a"]
     feats = [feature("LineString", graph.edges[int(tab["id"][i])].geometry,
-                     color=band(float(e), bounds, colours), error=round(float(e), 1),
+                     color=band(float(o), bounds, colours), error=round(float(e), 1),
                      truth=round(float(weight[i]), 1), predicted=round(float(pred[i]), 1), width=3)
-             for i, e in zip(hide, err)]
+             for i, e, o in zip(hide, err, off)]
     rung = float(np.mean([to_class(a) == to_class(b) for a, b in zip(pred[hide], weight[hide])]))
     return feats, {
-        "name": "KNN: hold-out test", "algorithm": "knn",
-        "description": "A fifth of the observed roads were hidden and predicted from the rest with "
-                       "K nearest neighbours. Colour is the size of the error in weight points "
-                       "(green to dark red spans 80).",
-        "legend": [{"color": colours[0], "label": "within 5"}, {"color": colours[1], "label": "5 to 15"},
-                   {"color": colours[2], "label": "over 15"}],
+        "name": "Spread: hold-out test", "algorithm": "spread",
+        "description": "A fifth of the painted roads were hidden and predicted from the rest by "
+                       "the same spread that fills the map. Colour is how many traffic levels "
+                       "the prediction was off.",
+        "legend": [{"color": colours[0], "label": "right level"}, {"color": colours[1], "label": "one level off"},
+                   {"color": colours[2], "label": "two or more off"}],
         "summary": f"{hide.size:,} roads hidden: mean error {err.mean():.1f} points, "
                    f"right traffic level {100 * rung:.0f} % of the time",
         "stats": {"hidden": int(hide.size), "mae": round(float(err.mean()), 2),

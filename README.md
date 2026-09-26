@@ -28,7 +28,7 @@ table, and the layer index.
 1. Capture. 4,928 tiles at zoom 17 cover the metro area. About 1 minute at 96 requests a second.
 2. Graph. 48,413 nodes and 110,382 directed edges from OpenStreetMap, 8,302 km, no edge longer than 150 m. Built once and committed.
 3. Decode. Every edge is sampled along its length and read from the tiles into a weight: green 25, yellow 55, red 85, dark red 105. 13 seconds.
-4. Impute. Google paints about a tenth of the network. The rest is predicted from the nearest observed roads with KNN, faded to a K-means zone average far from any data. 16 seconds.
+4. Impute. Google paints about a tenth of the network. Every other road takes the colour of the nearest painted road along the network: the same colour where it touches it, one level milder per junction after that, and green where no painted road connects to it. Only the four colours Google uses ever appear. 4 seconds.
 5. Layers. Every algorithm runs on the result and writes a map layer. 65 seconds.
 6. Site. The map and all its data as static files. 19 seconds.
 
