@@ -25,8 +25,8 @@ from .ml.knn import KNN, KNNRegressor, standardize
 from .ml.logistic_regression import OneVsRest
 from .search.astar import astar, haversine_heuristic
 from .search.dijkstra import dijkstra
-from .traffic.assignment import Assignment
-from .traffic.demand import gravity_matrix, sample_od_pairs, zones_from_grid
+from .simulation.assignment import Assignment
+from .simulation.demand import gravity_matrix, sample_od_pairs, zones_from_grid
 from .traffic.impute import Config, edge_table, predict
 from .traffic.weights import to_class, to_hex, travel_time_s
 
@@ -333,31 +333,31 @@ def demand_lines(zones, matrix, top=60):
 
 
 def assignment_frames(graph, weight_of, zones, matrix, trips=300, per_trip=40.0):
-    """New trips on top of today's traffic: before, all at once, and incremental."""
+    """New trips on top of today's traffic: before, all at once, and in batches."""
     base = {e.id: weight_of.get(e.id, 25.0) / 100.0 * e.capacity_vph for e in graph.edges.values()}
     by_id = {z["id"]: z for z in zones}
     od = [(by_id[a]["node"], by_id[b]["node"]) for a, b in sample_od_pairs(matrix, trips, seed=0)]
     t0 = time.time()
-    naive = Assignment(graph, base_volume=base).all_at_once(od, per_trip)
-    a = Assignment(graph, base_volume=base)
-    frames = a.incremental(od, batches=10, vehicles_per_trip=per_trip)
-    before, after = frames[0], frames[-1]
+    before = Assignment(graph, base)
+    naive = Assignment(graph, base)
+    naive.all_at_once(od, per_trip)
+    batched = Assignment(graph, base)
+    batched.in_batches(od, batches=10, vehicles_per_trip=per_trip)
     secs = time.time() - t0
-    changed = [eid for eid in graph.edges
-               if after["vc"][eid] != before["vc"][eid] or naive["vc"][eid] != before["vc"][eid]]
+    changed = sorted({eid for route in naive.routes + batched.routes for eid in route})
 
-    def frame_feats(frame):
+    def frame_feats(run):
         out = []
         for eid in changed:
-            vc = frame["vc"][eid]
+            vc = run.volume_over_capacity(eid)
             cls = 1 if vc < 0.45 else 2 if vc < 0.8 else 3 if vc < 1.1 else 4
-            out.append(feature("LineString", graph.edges[eid].geometry, cls=cls, vc=vc,
-                               volume=round(frame["volume"].get(eid, 0.0), 1), width=4))
+            out.append(feature("LineString", graph.edges[eid].geometry, cls=cls, vc=round(vc, 3),
+                               volume=round(run.volume.get(eid, 0.0), 1), width=4))
         return out
 
     legend = [{"color": RAMP[1], "label": "under capacity"}, {"color": RAMP[2], "label": "filling"},
               {"color": RAMP[3], "label": "near capacity"}, {"color": RAMP[4], "label": "over capacity"}]
-    sb, sn, sa = before["stats"], naive["stats"], after["stats"]
+    sb, sn, sa = before.measure(), naive.measure(), batched.measure()
     desc = (f"{trips} new trips ({trips * per_trip:,.0f} vehicles) added to today's traffic. "
             "Only the roads the new trips use are drawn. ")
     return [
@@ -365,24 +365,25 @@ def assignment_frames(graph, weight_of, zones, matrix, trips=300, per_trip=40.0)
             "name": "Assignment: before", "algorithm": "assignment",
             "description": desc + "This is the load before the new trips.",
             "legend": legend,
-            "summary": f"{sb['over_capacity']:,} roads over capacity before the new trips",
+            "summary": f"{sb['roads_over_capacity']:,} roads over capacity before the new trips",
             "stats": {"before": sb, "roads_drawn": len(changed)}}),
         (frame_feats(naive), {
             "name": "Assignment: all at once", "algorithm": "assignment",
             "description": desc + "Every trip takes the shortest path on the network as it was, "
                                   "with no feedback. This is what happens without assignment.",
             "legend": legend,
-            "summary": f"{sn['over_capacity']:,} roads over capacity when every trip takes "
+            "summary": f"{sn['roads_over_capacity']:,} roads over capacity when every trip takes "
                        "the shortest path at once",
             "stats": {"all_at_once": sn, "roads_drawn": len(changed)}}),
-        (frame_feats(after), {
-            "name": "Assignment: incremental", "algorithm": "assignment",
+        (frame_feats(batched), {
+            "name": "Assignment: in batches", "algorithm": "assignment",
             "description": desc + "Trips are routed with A* in ten batches; each batch sees the load "
                                   "the earlier ones added and goes around it.",
             "legend": legend,
-            "summary": f"{sa['over_capacity']:,} roads over capacity with incremental assignment "
-                       f"({a.searches + trips:,} A* searches in {secs:.0f} s)",
-            "stats": {"incremental": sa, "searches": a.searches + trips, "roads_drawn": len(changed)}}),
+            "summary": f"{sa['roads_over_capacity']:,} roads over capacity routed in batches "
+                       f"({naive.searches + batched.searches:,} A* searches in {secs:.0f} s)",
+            "stats": {"in_batches": sa, "searches": naive.searches + batched.searches,
+                      "roads_drawn": len(changed)}}),
     ]
 
 
@@ -423,7 +424,7 @@ def build_all(graph: RoadGraph, weights_csv: Path, out: Path, log=print) -> dict
         entries.append({"id": name, "file": f"{name}.geojson", "features": n, **entry})
         log(f"  {name:18s} {n:7,} features  {time.time() - t1:5.1f}s")
     t1 = time.time()
-    for name, (feats, entry) in zip(("assignment-before", "assignment-all-at-once", "assignment-incremental"),
+    for name, (feats, entry) in zip(("assignment-before", "assignment-all-at-once", "assignment-in-batches"),
                                     assignment_frames(graph, weight_of, zones, matrix)):
         n = write(out, name, feats)
         entries.append({"id": name, "file": f"{name}.geojson", "features": n, **entry})

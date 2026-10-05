@@ -69,6 +69,7 @@
     <button data-tab="style" role="tab">Style</button>
     <button data-tab="graph" role="tab">Graph</button>
     <button data-tab="weights" role="tab">Weights</button>
+    <button data-tab="simulate" role="tab">Simulate</button>
   </nav>
 
   <!-- ── Layers ── -->
@@ -247,6 +248,60 @@
   </section>
 
   <!-- ── Weights ── -->
+  <!-- ── Simulate: the city-scale algorithms, run from the map ── -->
+  <section class="tabpanel" data-panel="simulate">
+    <div class="group">
+      <div class="grouphead"><h3>Running now</h3></div>
+      <p class="hint facts" id="simStatus">checking…</p>
+      <div class="simbar"><i id="simBar"></i></div>
+    </div>
+
+    <div class="group">
+      <div class="grouphead"><h3>1 · Forecast</h3>
+        <button class="btn sm" id="simRunForecast">Run</button></div>
+      <p class="hint">K-means groups every capture into traffic scenarios without being told the time.
+        KNN and logistic regression then forecast every road, and are scored on captures they never saw,
+        against two baselines.</p>
+      <div class="simout" id="simForecast"></div>
+    </div>
+
+    <div class="group">
+      <div class="grouphead"><h3>2 · City simulation</h3></div>
+      <p class="hint">Thousands of A* searches across Dhaka. The same trips are routed all at once, then in
+        batches that each see the jams the last ones made.</p>
+      <div class="rows">
+        <label class="row"><span>Day</span><select id="simDay">
+          <option value="sunday">Sunday</option><option value="monday">Monday</option>
+          <option value="tuesday" selected>Tuesday</option><option value="wednesday">Wednesday</option>
+          <option value="thursday">Thursday</option><option value="friday">Friday</option>
+          <option value="saturday">Saturday</option></select></label>
+        <label class="row"><span>Time (Dhaka)</span><input id="simTime" type="time" value="17:00"></label>
+        <label class="row"><span>Trips</span><input id="simTrips" type="number" min="50" max="20000" step="50" value="2000"></label>
+        <label class="row"><span>Batches</span><input id="simBatches" type="number" min="1" max="50" value="10"></label>
+        <label class="row"><span>Vehicles per trip</span><input id="simVehicles" type="number" min="1" max="200" value="10"></label>
+        <label class="row"><span>Forecast with</span><select id="simModel">
+          <option value="knn" selected>KNN</option><option value="logistic">Logistic regression</option></select></label>
+      </div>
+      <button class="btn" id="simRunCity">Run city simulation</button>
+      <div class="simout" id="simCity"></div>
+    </div>
+
+    <div class="group">
+      <div class="grouphead"><h3>3 · Road changes (CSP)</h3></div>
+      <p class="hint">Which street changes would help an area: side streets made one-way or closed, U-turn gaps
+        closed. A CSP finds every layout that obeys the rules; each one is then scored with A*.
+        Uses the trips of the last city simulation.</p>
+      <div class="rows">
+        <label class="row"><span>Area</span><select id="simArea">
+          <option value="farmgate" selected>Farmgate</option><option value="mohakhali">Mohakhali</option></select></label>
+        <label class="row"><span>Most changes</span><select id="simMaxChanges">
+          <option value="1">1</option><option value="2" selected>2</option><option value="3">3 (slow)</option></select></label>
+      </div>
+      <button class="btn" id="simRunChanges">Find road changes</button>
+      <div class="simout" id="simChanges"></div>
+    </div>
+  </section>
+
   <section class="tabpanel" data-panel="weights">
     <div class="group">
       <div class="grouphead"><h3>Traffic weights</h3></div>

@@ -123,6 +123,7 @@ def clear_stale(out: Path) -> None:
         p.unlink()
     shutil.rmtree(out / "data" / "layers", ignore_errors=True)
     shutil.rmtree(out / "data" / "frames", ignore_errors=True)
+    shutil.rmtree(out / "data" / "simulation", ignore_errors=True)
     for name in ("app.js",):                     # written by an older build
         (out / name).unlink(missing_ok=True)
 
@@ -165,6 +166,19 @@ def write_frames(caps: list[dict], out: Path) -> dict:
     return {"v": version, "lines": count, "parts": parts, "base": base,
             "processed": sorted(files), "stale": sorted(c["name"] for c in caps if c.get("stale")),
             "files": files}
+
+
+def copy_simulation(out: Path) -> dict:
+    """The simulation results that exist (simulate.py writes them), copied so
+    the site can show them. The site cannot run a simulation: it has no server."""
+    files = {}
+    for name in server.SIM_RESULTS:
+        src = server.sim_dir() / f"{name}.json"
+        if src.exists():
+            (out / "simulation").mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, out / "simulation" / f"{name}.json")
+            files[name] = f"data/simulation/{name}.json"
+    return files
 
 
 def copy_layers(out: Path) -> list[dict]:
@@ -299,6 +313,7 @@ def main() -> int:
     print(f"  frames  {len(frames.get('files', {}))} processed of {len(caps)} captures", flush=True)
     with stage("layers"):
         layers = copy_layers(out)
+    simulation = copy_simulation(out / "data")
     print(f"  layers  {len(layers)}", flush=True)
 
     # on Actions the environment names the repository, so the page can link
@@ -310,6 +325,7 @@ def main() -> int:
         "built_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "min_zoom": server.MIN_ZOOM, "keep": args.keep, "runs_url": runs_url, "runs_api": runs_api,
         "captures": caps, "model": model, "graph": graph, "layers": layers, "frames": frames,
+        "simulation": simulation,
         "timing": stage_history(caps),
     }
     (out / "data" / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")

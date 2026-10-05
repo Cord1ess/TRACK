@@ -135,6 +135,7 @@ export const state = {
   },
   weights: { g: 25, o: 55, r: 85, d: 105 }, jam: 4, beta: 4,
   inspect: false, reloading: false, booted: false,
+  sim: null,             // the Simulate tab's results and replay state (simulate.js)
   // The model through time (frames.js). `v` is the line-list version frames
   // are built against; empty means the server offers none and the map shows
   // the single model it was given, as before.

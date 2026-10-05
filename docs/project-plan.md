@@ -37,14 +37,19 @@ data-collection/
   tests/selftest.py
 
 algorithms/
-  pipeline.py                 graph -> decode -> impute -> layers
+  pipeline.py                 one capture: graph -> decode -> impute -> layers
+  batch.py                    many captures through pipeline.py
+  simulate.py                 all captures: history -> forecast -> city -> changes
   track_algos/
-    geo.py
-    graph/road_graph.py, build_graph.py
+    geo.py, progress.py
+    graph/road_graph.py, build_graph.py, areas.py
     decode/palette.py, decoder.py
-    traffic/weights.py, impute.py, bpr.py, demand.py, assignment.py
+    traffic/weights.py, impute.py, bpr.py
     search/astar.py, dijkstra.py
     ml/kmeans.py, knn.py, logistic_regression.py
+    forecast/history.py, scenarios.py, predict.py, evaluate.py
+    simulation/demand.py, assignment.py, city.py
+    planning/csp.py, road_changes.py
     layers.py                 one map layer per algorithm
   tests/                      one file per algorithm
   output/graph/dhaka.json.gz  committed; everything else under output/ is generated
@@ -70,7 +75,7 @@ capacity_vph, free_flow_kmph, free_flow_s, geometry}]`. Cut points from the
 Edge weight table `observed.csv` and `complete.csv`: `slot_utc, edge_id, cls,
 weight, f_green, f_orange, f_red, f_darkred, coverage, vc_ratio, n_samples,
 source`; `complete.csv` adds `method`. Weight: green 25, yellow 55, red 85, dark
-red 105, continuous; `vc_ratio = weight / 100`. Source: observed, predicted, or
+red 105, and nothing in between; `vc_ratio = weight / 100`. Source: observed, predicted, or
 none (decoder only, below the coverage threshold). A `.meta.json` beside each
 table carries the `graph_id`.
 
@@ -96,8 +101,9 @@ manifest changes.
 | Map layers | one layer per algorithm, listed with a description, legend and numbers | done |
 | Visualizer | captures as tiles, the model, the road graph, layers, live weight tuning, reliability suite | done |
 | Scheduled collection | GitHub Actions, self-restarting chain, Hugging Face archive, GitHub Pages deploy, live update in the page | done |
-| Models across time | K-means scenarios over many captures, KNN against logistic regression per time of day | not started; the workflow now produces the captures |
-| Engine and demo | before and after assignment layers exist; the animated run and personal A-to-B routing are not built | partly |
+| Models across time | K-means scenarios over all captures; KNN and logistic regression forecasts tested on captures they never saw | done (`simulate.py forecast`) |
+| City simulation | gravity trips routed with A* all at once and in batches on a forecast, replayed on the map | done (`simulate.py city`, Simulate tab) |
+| Road changes | CSP over street and U-turn changes in Farmgate and Mohakhali, scored with A* | done (`simulate.py changes`, Simulate tab) |
 
 ## 5. Risks
 

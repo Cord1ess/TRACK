@@ -10,24 +10,36 @@ python -m pytest tests -q
 
 ## Modules
 
+A plain-language guide to each algorithm, and how to show it, is in
+[`docs/algorithms.md`](../docs/algorithms.md).
+
 | Module | What it does |
 |---|---|
 | `geo.py` | Web Mercator tile maths and haversine distance |
+| `progress.py` | Tells the map which algorithm is running and how far it has got |
 | `graph/road_graph.py` | `RoadGraph`: junctions, directed edges, capacity, free-flow time; JSON and GeoJSON |
 | `graph/build_graph.py` | OpenStreetMap (Overpass) to `RoadGraph`, cut at every junction and every 150 m |
+| `graph/areas.py` | Farmgate and Mohakhali, the roads inside them, and street names |
 | `decode/palette.py` | Google's traffic colours to a class per pixel |
-| `decode/decoder.py` | Capture tiles and graph to a weight per edge |
-| `traffic/weights.py` | The weight scale (green 25, yellow 55, red 85, dark red 105) and the demotion ladder |
-| `traffic/impute.py` | A weight for every road Google never painted, with its own checks |
+| `decode/decoder.py` | Capture tiles and graph to a colour per edge |
+| `traffic/weights.py` | The weight scale: green 25, yellow 55, red 85, dark red 105 |
+| `traffic/impute.py` | The spread: a colour for every road Google never painted |
 | `traffic/bpr.py` | Travel time from volume over capacity (BPR function) |
-| `traffic/demand.py` | Trips between zones from a gravity model |
-| `traffic/assignment.py` | Route trips on congested costs and feed the load back: incremental and MSA |
-| `search/astar.py` | A* with a haversine heuristic and an injected cost function |
+| `search/astar.py` | A* with a straight-line heuristic and an injected cost function |
 | `search/dijkstra.py` | Least cost from one node to every node |
 | `ml/kmeans.py` | K-means with k-means++ start |
 | `ml/knn.py` | KNN classifier and regressor |
 | `ml/logistic_regression.py` | Logistic regression, binary and one-vs-rest |
-| `layers.py` | Runs every algorithm on the current data and writes one map layer each |
+| `forecast/history.py` | Every processed capture as one table of captures x roads |
+| `forecast/scenarios.py` | K-means over time: the city's traffic scenarios |
+| `forecast/predict.py` | The forecasters: KNN, logistic regression, and two baselines |
+| `forecast/evaluate.py` | Forecasts captures it never saw and scores them |
+| `simulation/demand.py` | Trips between zones from a gravity model |
+| `simulation/assignment.py` | Routes trips with A*, all at once or in batches with feedback |
+| `simulation/city.py` | The city-wide experiment |
+| `planning/csp.py` | A CSP solver: backtracking with forward checking |
+| `planning/road_changes.py` | Street changes for one area, as a CSP, scored with A* |
+| `layers.py` | Runs the per-capture algorithms and writes one map layer each |
 
 ## Pipeline
 
@@ -44,15 +56,26 @@ The road graph is committed as `output/graph/dhaka.json.gz` and unpacked on
 first run. `python pipeline.py --only graph --force` rebuilds it from
 OpenStreetMap; gzip the result to update the committed copy.
 
-Times on the metro capture: decode 13 s, impute 16 s (225 s with the
-evaluation), layers 65 s.
+Times on one capture: decode about 30 s, impute about 5 s, layers about 80 s.
+
+## Simulation
+
+```
+python simulate.py history                                  every capture into one table
+python simulate.py forecast                                 K-means, KNN, logistic regression, tested
+python simulate.py city --day tuesday --time 17:00 --trips 2000
+python simulate.py changes --area farmgate --max-changes 2  run city first
+```
+
+Reads every `../week*/weights` folder (or `--weights`), writes JSON into
+`output/simulation/` and keeps `output/simulation/progress.json` current. The
+map's Simulate tab starts these and shows the results.
 
 ## The traffic weight
 
 One number per directed edge, higher means worse: green 25, yellow 55, red 85,
-dark red 105. Divided by 100 it is the volume over capacity ratio the BPR
-function takes. It is continuous, so an edge that is half green and half red
-lands near 55 instead of being forced into one class.
+dark red 105, and never anything in between. Divided by 100 it is the volume
+over capacity ratio the BPR function takes.
 
 `source` says where a weight came from: `observed` means Google painted that
 road and the decoder read it, `predicted` means it was inferred. On the metro

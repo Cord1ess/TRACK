@@ -18,15 +18,14 @@ Averaging produced 773 different weights across the city, values like 29.74
 that no colour on the map corresponds to. Spreading through open space instead
 of along the network made a road a neighbour of one across a river.
 
-Two checks run alongside and land in the report: `measure_class_step` measures
-the demotion assumption on observed roads, and `evaluate` hides a share of the
-observed edges and scores the prediction against them.
+A check runs alongside when asked (the pipeline's --quick skips it): `evaluate`
+hides a fifth of the painted roads, predicts them from the rest, and scores the
+prediction against what Google painted.
 """
 
 import argparse
 import json
 import sys
-from collections import defaultdict
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -35,7 +34,6 @@ import numpy as np
 from ..decode.decoder import read_csv, read_meta, write_csv, write_geojson
 from ..geo import local_xy
 from ..graph.road_graph import RoadGraph, class_rank
-from ..ml.knn import KNNRegressor
 from .weights import CEILING, FLOOR, LADDER, demote, summary, to_class
 
 METHOD_NAMES = {0: "observed", 1: "adjacent", 2: "spread", 3: "assumed_clear"}
@@ -58,18 +56,12 @@ def _snap(w) -> np.ndarray:
 
 @dataclass
 class Config:
-    k: int = 5                    # neighbours per unobserved edge
-    max_dist_m: float = 500.0     # beyond this a neighbour counts for nothing
-    # Kept so old commands and saved configs still run. The spread works in
-    # junctions now, not metres, so neither of these changes the result.
-    decay_m: float = 250.0
     hops_per_rung: float = 1.0    # after the touching roads, junctions per rung milder
     claim: str = "nearest"        # "nearest": the closest observed road decides.
                                   # "worst": the most congested one within reach
                                   # decides, which never hides a jam but
                                   # over-states congestion: 34% of observed roads
                                   # are calmer than their worst neighbour.
-    zones: int = 24               # unused here; layers.py still draws K-means zones
     # Off by default: it makes a small street beside a red road orange, where
     # the rule is that touching roads share the colour. On/off only, since the
     # ladder has no half rungs; any strength above 0 is a full step.
@@ -129,14 +121,8 @@ def _adjacency(u, v) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _adjacency_of(tab: dict) -> tuple[np.ndarray, np.ndarray]:
-    """The table's adjacency, or one built from a plain list of neighbour lists."""
-    if "adj" in tab:
-        return tab["adj"]
-    nbrs = tab["nbrs"]
-    ptr = np.zeros(len(nbrs) + 1, dtype=np.int64)
-    np.cumsum([len(x) for x in nbrs], out=ptr[1:])
-    idx = np.fromiter((j for x in nbrs for j in x), dtype=np.int64, count=int(ptr[-1]))
-    return ptr, idx
+    """The (ptr, idx) adjacency edge_table built."""
+    return tab["adj"]
 
 
 def _bfs(ptr: np.ndarray, idx: np.ndarray, seeds) -> np.ndarray:
@@ -168,48 +154,6 @@ def _rungs_lost(d, per_rung: int) -> np.ndarray:
     for the road itself or one touching it, then one every per_rung junctions."""
     d = np.asarray(d, dtype=np.int64)
     return np.where(d <= 1, 0, (d - 1 + per_rung - 1) // per_rung)
-
-
-def _step_stats(v: np.ndarray) -> dict:
-    return {"pairs": int(v.size), "mean_weight_change": round(float(v.mean()), 2),
-            "median": round(float(np.median(v)), 2),
-            "share_lower": round(float((v < -1).mean()), 3),
-            "share_equal": round(float((np.abs(v) <= 1).mean()), 3),
-            "share_higher": round(float((v > 1).mean()), 3)}
-
-
-def measure_class_step(tab: dict, weight: np.ndarray, observed: np.ndarray,
-                       max_dist_m: float = 300.0, k: int = 12,
-                       busy_threshold: float = 55.0) -> dict:
-    """On observed roads only: how much lower is a smaller road's weight than a
-    nearby bigger road's? `beside_busy` keeps the pairs where the bigger road
-    is at least busy_threshold, which is the case the ladder is about."""
-    oi = np.flatnonzero(observed)
-    if oi.size < 50:
-        return {"pairs": 0, "note": "not enough observed edges"}
-    knn = KNNRegressor(k=min(k, oi.size)).fit(tab["xy"][oi], weight[oi])
-    d, nb = knn.kneighbors(tab["xy"][oi])
-    buckets, busy = defaultdict(list), []
-    for a in range(oi.size):
-        for col in range(1, d.shape[1]):            # column 0 is the edge itself
-            if d[a, col] > max_dist_m:
-                break
-            b = nb[a, col]
-            dr = int(round(tab["rank"][oi[b]] - tab["rank"][oi[a]]))
-            if dr > 0:                              # b is the smaller road
-                diff = float(weight[oi[b]] - weight[oi[a]])
-                buckets[min(dr, 3)].append(diff)
-                if weight[oi[a]] >= busy_threshold:
-                    busy.append(diff)
-    out = {"pairs": int(sum(len(v) for v in buckets.values())), "max_dist_m": max_dist_m,
-           "busy_threshold": busy_threshold, "by_rank_delta": {}}
-    for dr in sorted(buckets):
-        out["by_rank_delta"][str(dr)] = _step_stats(np.asarray(buckets[dr]))
-    allv = np.concatenate([np.asarray(v) for v in buckets.values()]) if buckets else np.zeros(0)
-    if allv.size:
-        out["all_pairs"] = _step_stats(allv)
-    out["beside_busy"] = _step_stats(np.asarray(busy)) if busy else {"pairs": 0}
-    return out
 
 
 def predict(tab: dict, weight: np.ndarray, observed: np.ndarray, cfg: Config,
@@ -343,8 +287,8 @@ def evaluate(tab: dict, weight: np.ndarray, observed: np.ndarray, cfg: Config,
 def build_complete(graph: RoadGraph, rows: list[dict], cfg: Config,
                    log=print, full_report: bool = True) -> tuple[list[dict], dict]:
     """Observed rows plus a predicted row for every other edge, and the report.
-    full_report=False skips the hold-out evaluation and the class-step
-    measurement, which take minutes and only change when the model does."""
+    full_report=False skips the hold-out evaluation, which takes a minute and
+    only changes when the model does."""
     tab = edge_table(graph)
     index = {int(i): n for n, i in enumerate(tab["id"])}
     weight = np.zeros(tab["id"].size)
@@ -360,8 +304,6 @@ def build_complete(graph: RoadGraph, rows: list[dict], cfg: Config,
     report = {"config": asdict(cfg), "observed_edges": int(observed.sum()),
               "total_edges": int(tab["id"].size)}
     if full_report:
-        log("  measuring the demotion assumption on observed roads...")
-        report["class_step"] = measure_class_step(tab, weight, observed)
         log("  hold-out evaluation...")
         report["evaluation"] = evaluate(tab, weight, observed, cfg)
 
@@ -400,24 +342,19 @@ def main() -> int:
     ap.add_argument("--out", type=Path, default=Path("output/traffic/complete.csv"))
     ap.add_argument("--report", type=Path, default=Path("output/traffic/impute-report.json"))
     ap.add_argument("--geojson", action="store_true", help="also write predicted/observed/complete layers")
-    ap.add_argument("-k", type=int, default=5)
-    ap.add_argument("--max-dist-m", type=float, default=500.0)
-    ap.add_argument("--decay-m", type=float, default=250.0)
     ap.add_argument("--hops-per-rung", type=float, default=1.0,
                     help="after the roads touching an observed road, junctions per rung milder")
     ap.add_argument("--claim", choices=("nearest", "worst"), default="nearest",
                     help="nearest: the closest observed road wins (more accurate); "
                          "worst: the most congested within reach wins (never hides a jam)")
-    ap.add_argument("--zones", type=int, default=24)
     ap.add_argument("--no-demote", action="store_true")
     ap.add_argument("--demote-strength", type=float, default=0.0,
                     help="above 0: a road smaller than the roads it meets is one rung milder")
     ap.add_argument("--no-eval", action="store_true",
-                    help="skip the hold-out evaluation and class-step measurement (fast)")
+                    help="skip the hold-out evaluation (fast)")
     args = ap.parse_args()
 
-    cfg = Config(k=args.k, max_dist_m=args.max_dist_m, decay_m=args.decay_m, zones=args.zones,
-                 hops_per_rung=args.hops_per_rung, claim=args.claim,
+    cfg = Config(hops_per_rung=args.hops_per_rung, claim=args.claim,
                  demote_smaller=not args.no_demote, demote_strength=args.demote_strength)
     graph = RoadGraph.load(args.graph)
     gid = graph.graph_id()
@@ -441,13 +378,6 @@ def main() -> int:
         for m, v in report["evaluation"]["models"].items():
             print(f"    {m:14s} {v['mae']:7.2f} {v['rmse']:7.2f} {v['rung_accuracy']:8.1%} "
                   f"{v['too_green']:9.1%}")
-    cs = report.get("class_step", {})
-    if cs.get("pairs"):
-        b = cs.get("beside_busy", {})
-        print(f"\n  demotion assumption on {cs['pairs']} nearby observed pairs: "
-              f"all pairs {cs['all_pairs']['mean_weight_change']:+.1f}, "
-              f"beside a busy road {b.get('mean_weight_change', 0):+.1f} "
-              f"({b.get('share_lower', 0):.0%} lower, {b.get('pairs', 0)} pairs)")
     print("  weights:", json.dumps(report["weights"]))
 
     if args.geojson:

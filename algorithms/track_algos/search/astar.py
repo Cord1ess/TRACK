@@ -1,28 +1,39 @@
 """A* search: the least-cost path from one node to another.
 
-Each node's priority is f = g + h, cost so far plus an estimate of the cost
-left. The estimate is straight-line distance at the network's top speed, which
-never exceeds the real travel time, so the first path found is the best one.
-The edge cost function is injected: free-flow time, BPR-congested time, or
-anything else.
+Each node's priority is f = g + h: the cost so far (g) plus an estimate of the
+cost left (h). The estimate is the straight-line distance to the goal driven at
+the network's top speed. Nothing can beat that, so the estimate never
+overestimates, and the first time the goal comes off the queue its path is the
+best one. The edge cost function is passed in: free-flow time, congested BPR
+time, or anything else.
 """
 
 import heapq
+import math
 from typing import Callable, Hashable
 
-from ..geo import haversine_m
+from ..geo import EARTH_R
 from ..graph.road_graph import Edge, RoadGraph
 
 
 def haversine_heuristic(graph: RoadGraph, max_speed_kmph: float | None = None) -> Callable:
-    """Straight-line time at the network's top speed; never overestimates."""
+    """Straight-line time to the goal at the network's top speed.
+
+    Every junction's position is turned into metres east and north once, so
+    each estimate is one square root rather than five trigonometric calls; on a
+    congested city A* makes tens of thousands of estimates per search. Across
+    Dhaka the flat-map distance is within a fraction of a percent of the true
+    one, and it is shrunk by 1 % so it can never overestimate."""
     top = max_speed_kmph or max((e.free_flow_kmph for e in graph.edges.values()), default=50.0)
     top_ms = top / 3.6
+    lat0 = sum(lat for _, lat in graph.nodes.values()) / max(1, len(graph.nodes))
+    east = math.cos(math.radians(lat0)) * math.pi / 180.0 * EARTH_R
+    north = math.pi / 180.0 * EARTH_R
+    xy = {n: (lon * east, lat * north) for n, (lon, lat) in graph.nodes.items()}
 
     def h(node: Hashable, goal: Hashable) -> float:
-        lon1, lat1 = graph.nodes[node]
-        lon2, lat2 = graph.nodes[goal]
-        return haversine_m(lon1, lat1, lon2, lat2) / top_ms
+        (x1, y1), (x2, y2) = xy[node], xy[goal]
+        return 0.99 * math.hypot(x2 - x1, y2 - y1) / top_ms
     return h
 
 

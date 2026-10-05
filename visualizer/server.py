@@ -23,6 +23,9 @@ slippy-map tile layer instead of a screenshot:
                                             version their frames are built against
     GET /frame/<name>?v=<version>           one processed capture's colours, one character
                                             per map line, so the timeline can play the model
+    GET /api/sim                            what the simulation is doing, and which results exist
+    GET /sim/<name>.json                    one result: history, forecast, city, changes-<area>
+    POST /api/sim/run                       start a run: {"task": "city", "trips": 2000, ...}
     GET /api/graph                          the road graph itself: junction and edge counts
     GET /graph.geojson[?part=nodes|links]   junctions as points, directed edges as lines,
                                             for looking at the network A* actually walks
@@ -38,6 +41,9 @@ Zero dependencies beyond Pillow + numpy. No keys anywhere.
 import argparse
 import gzip
 import hashlib
+import os
+import re
+import subprocess
 import io
 import json
 import shutil
@@ -63,6 +69,7 @@ MIN_ZOOM = 8   # lowest zoom the server will build; the UI reads it from /api/co
 MODEL: "model_mod.ModelData | None" = None   # TRACK's own decoded + predicted traffic
 GRAPH: "graph_mod.GraphData | None" = None   # the road graph: junctions and directed edges
 WEIGHTS: "Path | None" = None                # processed weight tables, <capture>.csv.gz
+ALGORITHMS = (HERE.parent / "algorithms").resolve()
 
 _LOCK = threading.Lock()
 
@@ -266,6 +273,87 @@ def frame_source(name: str) -> Path | None:
         if m and m.get("captured_utc") == slot:
             return MODEL.csv_path
     return None
+
+
+# ── simulations: algorithms/simulate.py, run as a separate process ──────────
+# The visualizer never imports the algorithms; it starts simulate.py, which
+# writes its progress and results as JSON files into <output>/simulation, and
+# reads those files back. One run at a time.
+
+SIM_RESULTS = ("history", "forecast", "city", "changes-farmgate", "changes-mohakhali")
+SIM_DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+SIM_JOB: dict = {"process": None, "task": ""}
+
+
+def sim_dir() -> Path:
+    return OUTPUT / "simulation"
+
+
+def sim_running() -> bool:
+    proc = SIM_JOB["process"]
+    return proc is not None and proc.poll() is None
+
+
+def sim_status() -> dict:
+    progress = None
+    try:
+        progress = json.loads((sim_dir() / "progress.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        pass
+    results = {}
+    for name in SIM_RESULTS:
+        f = sim_dir() / f"{name}.json"
+        if f.exists():
+            results[name] = {"modified": int(f.stat().st_mtime), "bytes": f.stat().st_size}
+    return {"running": sim_running(), "task": SIM_JOB["task"], "progress": progress,
+            "results": results, "can_run": (ALGORITHMS / "simulate.py").exists()}
+
+
+def sim_command(body: dict) -> list[str]:
+    """Check the request and turn it into simulate.py's command line. Anything
+    out of range is refused rather than passed on."""
+    task = body.get("task")
+    args = []
+    if task == "history":
+        pass
+    elif task == "forecast":
+        k = int(body.get("scenarios", 5))
+        if not 2 <= k <= 10:
+            raise ValueError("scenarios must be 2 to 10")
+        args = ["--scenarios", str(k)]
+    elif task == "city":
+        day, clock = str(body.get("day", "tuesday")), str(body.get("time", "17:00"))
+        trips, batches = int(body.get("trips", 2000)), int(body.get("batches", 10))
+        vehicles, model = float(body.get("vehicles", 10)), str(body.get("model", "knn"))
+        if day not in SIM_DAYS or not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", clock):
+            raise ValueError("day or time not understood")
+        if not (50 <= trips <= 20000 and 1 <= batches <= 50 and 1 <= vehicles <= 200
+                and model in ("knn", "logistic")):
+            raise ValueError("trips 50-20000, batches 1-50, vehicles 1-200, model knn or logistic")
+        args = ["--day", day, "--time", clock, "--trips", str(trips), "--batches", str(batches),
+                "--vehicles", str(vehicles), "--model", model]
+    elif task == "changes":
+        area, most = str(body.get("area", "farmgate")), int(body.get("max_changes", 2))
+        if area not in ("farmgate", "mohakhali") or not 1 <= most <= 3:
+            raise ValueError("area farmgate or mohakhali, max_changes 1 to 3")
+        args = ["--area", area, "--max-changes", str(most)]
+    else:
+        raise ValueError("task must be history, forecast, city or changes")
+    return [sys.executable, "-B", "simulate.py", task, "--out", str(sim_dir()),
+            "--progress", str(sim_dir() / "progress.json"), *args]
+
+
+def sim_start(body: dict) -> dict:
+    if sim_running():
+        raise RuntimeError(f"a {SIM_JOB['task']} run is still going")
+    command = sim_command(body)
+    sim_dir().mkdir(parents=True, exist_ok=True)
+    (sim_dir() / "progress.json").unlink(missing_ok=True)
+    SIM_JOB["process"] = subprocess.Popen(
+        command, cwd=ALGORITHMS, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+    SIM_JOB["task"] = body.get("task")
+    return {"started": SIM_JOB["task"]}
 
 
 def list_captures() -> list[dict]:
@@ -580,6 +668,19 @@ class Handler(BaseHTTPRequestHandler):
         cache = "public, max-age=31536000, immutable" if asked == version else "no-cache"
         self._send(200, data, "application/json", cache, encoding="gzip")
 
+    def do_POST(self) -> None:
+        if urlparse(self.path).path != "/api/sim/run":
+            self._json({"error": "unknown route"}, 404)
+            return
+        try:
+            length = min(int(self.headers.get("Content-Length") or 0), 10_000)
+            body = json.loads(self.rfile.read(length) or b"{}")
+            self._json(sim_start(body))
+        except RuntimeError as busy:
+            self._json({"error": str(busy)}, 409)
+        except (ValueError, TypeError) as bad:
+            self._json({"error": str(bad)}, 400)
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
@@ -618,6 +719,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._vector(MODEL, parsed.query, "all")
             elif path == "/api/frames":
                 self._frames_index(parsed.query)
+            elif path == "/api/sim":
+                self._json(sim_status())
+            elif path.startswith("/sim/"):
+                name = path[len("/sim/"):].removesuffix(".json")
+                f = sim_dir() / f"{name}.json"
+                if name in SIM_RESULTS and f.exists():
+                    self._send(200, f.read_bytes(), "application/json")
+                else:
+                    self._json({"error": "no such result"}, 404)
             elif path.startswith("/frame/"):
                 self._frame(path[len("/frame/"):], parsed.query)
             elif path == "/api/graph":

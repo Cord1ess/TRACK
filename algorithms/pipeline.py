@@ -48,7 +48,6 @@ def main() -> int:
     ap.add_argument("--offset-px", type=float, default=4.0)
     ap.add_argument("--trim-m", type=float, default=10.0)
     ap.add_argument("--min-coverage", type=float, default=0.25)
-    ap.add_argument("--decay-m", type=float, default=250.0)
     ap.add_argument("--demote-strength", type=float, default=0.0,
                     help="above 0: a road smaller than the roads it meets is one level milder")
     ap.add_argument("--hops-per-rung", type=float, default=1.0,
@@ -107,7 +106,7 @@ def main() -> int:
                 # beside its own table: left to impute's default, every run wrote
                 # one shared output/traffic/impute-report.json, whatever --out was
                 "--report", str(args.out / "traffic" / "impute-report.json"),
-                "--decay-m", str(args.decay_m), "--demote-strength", str(args.demote_strength),
+                "--demote-strength", str(args.demote_strength),
                 "--hops-per-rung", str(args.hops_per_rung), "--claim", args.claim,
                 *(["--no-eval"] if args.quick else []))
         else:

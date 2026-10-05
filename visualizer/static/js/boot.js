@@ -26,6 +26,7 @@ import {
   applyGraph, applyGraphInfo, breathAlive, fetchGraphInfo, graphUrl,
 } from "./graph.js";
 import { loadLayerList } from "./layers.js";
+import { startSimulate } from "./simulate.js";
 import { loadCaptures, refreshCaptures } from "./captures.js";
 import { RUN_POLL, fetchRuns, render as renderCollectBar, startTicking } from "./collection.js";
 import { bindTrack, buildTimeline } from "./timeline.js";
@@ -106,6 +107,7 @@ map.on("load", async () => {
   setInterval(fetchRuns, RUN_POLL);
   startTicking();          // the elapsed part counts up between polls
   await loadLayerList();
+  startSimulate();
   applyModelInfo(await fetchModelInfo(), { boot: true });
   applyGraphInfo(await fetchGraphInfo());
   $("showModel").checked = state.model.show;

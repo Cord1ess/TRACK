@@ -4,9 +4,9 @@ total travel time than routing everyone all-or-nothing on free-flow costs."""
 
 from track_algos.graph.road_graph import RoadGraph
 from track_algos.search.astar import astar
-from track_algos.traffic.assignment import Assignment
+from track_algos.simulation.assignment import Assignment
 from track_algos.traffic.bpr import ALPHA, BETA, JAM_FACTOR, JAM_VC, bpr_time, bpr_time_from_ratio, delay_factor
-from track_algos.traffic.demand import gravity_matrix, sample_od_pairs, zones_from_grid
+from track_algos.simulation.demand import gravity_matrix, sample_od_pairs, zones_from_grid
 
 
 def test_bpr_shape():
@@ -41,46 +41,34 @@ def two_route_network():
     return g
 
 
-def test_incremental_assignment_spreads_load():
+def test_batches_spread_load_that_all_at_once_piles_up():
     g = two_route_network()
     trips = [(0, 1)] * 400
-    # all-or-nothing on free flow: everyone takes the short road
-    _, aon_edges, _ = astar(g, 0, 1)
-    assert aon_edges == [0]
+    _, free_flow_route, _ = astar(g, 0, 1)
+    assert free_flow_route == [0]                       # on an empty network everyone takes the short road
+
     naive = Assignment(g)
-    naive.volume = {0: 400.0}
-    naive_time = naive.total_travel_time()
-    naive_max_vc = naive.vc(0)
+    naive.all_at_once(trips, vehicles_per_trip=1.0)
+    assert naive.volume == {0: 400.0}                   # all of them, on the short road
 
-    a = Assignment(g)
-    frames = a.incremental(trips, batches=10)
-    assert len(frames) == 11 and frames[0]["label"] == "before"
-    assert a.searches == 400
-    # load is now split across both routes
-    assert a.volume.get(0, 0) > 0 and a.volume.get(1, 0) > 0
-    assert a.vc(0) < naive_max_vc
-    assert a.total_travel_time() < naive_time
-    assert frames[-1]["stats"]["over_capacity"] < 1 or frames[-1]["stats"]["max_vc"] < naive_max_vc
+    batched = Assignment(g)
+    seen = []
+    batched.in_batches(trips, batches=10, vehicles_per_trip=1.0,
+                       after_batch=lambda n, a: seen.append(n))
+    # 400 identical trips: one A* search per batch, shared by the batch's 40 trips
+    assert seen == list(range(1, 11)) and batched.searches == 10
+    assert batched.volume.get(0, 0) > 0 and batched.volume.get(1, 0) > 0     # split across both routes
+    assert batched.volume_over_capacity(0) < naive.volume_over_capacity(0)
+    assert batched.vehicle_hours() < naive.vehicle_hours()
+    assert batched.measure()["roads_over_capacity"] <= naive.measure()["roads_over_capacity"]
 
 
-def test_msa_converges_toward_balance():
+def test_background_traffic_is_kept_and_counted():
     g = two_route_network()
-    a = Assignment(g)
-    frames = a.msa([(0, 1)] * 400, iterations=12)
-    short, detour = a.volume.get(0, 0), a.volume.get(1, 0)
-    assert short > 0 and detour > 0
-    # at equilibrium both routes carry load and the short road is not wildly over capacity
-    assert a.vc(0) < 4.0
-    assert frames[-1]["stats"]["total_time_s"] <= frames[1]["stats"]["total_time_s"]
-
-
-def test_frame_geojson_styles_edges():
-    g = two_route_network()
-    a = Assignment(g)
-    a.incremental([(0, 1)] * 50, batches=2)
-    gj = a.frame_geojson(a.frames[-1])
-    assert gj["type"] == "FeatureCollection" and len(gj["features"]) == 3
-    assert all("cls" in f["properties"] and "color" in f["properties"] for f in gj["features"])
+    a = Assignment(g, background={0: 150.0})
+    assert a.volume_over_capacity(0) == 1.5 and a.roads_over_capacity() == 1
+    a.in_batches([(0, 1)] * 10, batches=2, vehicles_per_trip=[5.0] * 10)
+    assert a.volume[0] >= 150.0 and len(a.routes) == 10 and a.unreachable == 0
 
 
 def test_gravity_demand():
