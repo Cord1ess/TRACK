@@ -31,3 +31,8 @@ algorithms/output/graph/*
 # The static site build_site.py produces for GitHub Pages
 site/
 week1/
+week2/
+
+
+# Report and presentation drafts (week 2 numbers are still estimates)
+docs/*.docx

@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="1200" height="300">
+  <title>TRACK: Traffic Route optimization using A* search, Clustering and KNN</title>
+  <rect width="1200" height="300" rx="24" fill="#0b0d10"/>
+  <g transform="translate(96 78) scale(2.25)" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="14" cy="50" r="6"/>
+    <circle cx="50" cy="14" r="6"/>
+    <path d="M20 50H40a9 9 0 0 0 0-18H24a9 9 0 0 1 0-18H44"/>
+  </g>
+  <g font-family="Segoe UI, Helvetica Neue, Helvetica, Arial, sans-serif">
+    <text x="300" y="148" fill="#ffffff" font-size="88" font-weight="700" letter-spacing="10">TRACK</text>
+    <text x="304" y="194" fill="#a1a1a6" font-size="23">Traffic Route optimization using A* search, Clustering and KNN</text>
+  </g>
+  <g transform="translate(304 222)">
+    <rect width="132" height="8" rx="4" fill="#16e098"/>
+    <rect x="142" width="132" height="8" rx="4" fill="#ffcf43"/>
+    <rect x="284" width="132" height="8" rx="4" fill="#f24e42"/>
+    <rect x="426" width="132" height="8" rx="4" fill="#a92727"/>
+  </g>
+</svg>
