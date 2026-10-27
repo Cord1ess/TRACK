@@ -8,6 +8,11 @@ panel reads that file every second to show, for example:
 It is also printed to the terminal whenever the algorithm changes. File writes
 are limited to four a second and go through a temporary file that is renamed
 into place, so a reader never sees a half-written file.
+
+`live(part, data)` publishes what the algorithm is looking at right now, for the
+map to draw while it runs: live-routes.json (the routes A* has just found),
+live-roads.json (how full the roads are after each batch), live-csp.json (the
+road layout being scored). Each part is written at most twice a second.
 """
 
 import json
@@ -20,6 +25,7 @@ class Progress:
         self.path = Path(path) if path else None
         self.started = time.time()
         self.last_write = 0.0
+        self.live_written: dict[str, float] = {}         # part -> when it was last written
         self.state = {"task": task, "running": True, "ok": None, "algorithm": "",
                       "message": "starting", "done": 0, "total": 0, "elapsed_s": 0.0}
         self._write(force=True)
@@ -36,16 +42,29 @@ class Progress:
         self.state.update(running=False, ok=ok, message=message)
         self._write(force=True)
 
+    def live(self, part: str, data: dict, force: bool = False) -> None:
+        """Publish a live snapshot beside the progress file. Skipped when the
+        last one of this part went out under half a second ago, unless forced."""
+        now = time.time()
+        if self.path is None or (not force and now - self.live_written.get(part, 0.0) < 0.5):
+            return
+        self.live_written[part] = now
+        self._save(self.path.with_name(f"live-{part}.json"), data)
+
     def _write(self, force: bool = False) -> None:
         now = time.time()
         if self.path is None or (not force and now - self.last_write < 0.25):
             return
         self.last_write = now
         self.state["elapsed_s"] = round(now - self.started, 1)
+        self._save(self.path, self.state)
+
+    @staticmethod
+    def _save(path: Path, data: dict) -> None:
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = self.path.with_suffix(".tmp")
-            temporary.write_text(json.dumps(self.state), encoding="utf-8")
-            temporary.replace(self.path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
+            temporary.replace(path)
         except OSError:
             pass            # the reader had the file open; the next write will land

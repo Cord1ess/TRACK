@@ -12,6 +12,8 @@ JSON form:
 
 import hashlib
 import json
+import os
+import pickle
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -136,7 +138,29 @@ class RoadGraph:
 
     @classmethod
     def load(cls, path: Path) -> "RoadGraph":
-        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+        """Read the graph. Parsing 37 MB of JSON into 110,382 edges takes about
+        15 s and every pipeline stage of every capture did it again, so the
+        parsed graph is kept in a pickle beside the JSON and used while the
+        JSON's size and modification time still match."""
+        path = Path(path)
+        stamp = (path.stat().st_size, path.stat().st_mtime_ns)
+        cache = path.with_name(path.name + ".pickle")
+        try:
+            with open(cache, "rb") as f:
+                held_stamp, graph = pickle.load(f)
+            if held_stamp == stamp:
+                return graph
+        except Exception:
+            pass                                    # missing, stale or unreadable: rebuild it
+        graph = cls.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        try:
+            tmp = cache.with_name(f"{cache.name}.{os.getpid()}.tmp")
+            with open(tmp, "wb") as f:
+                pickle.dump((stamp, graph), f, protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace(tmp, cache)                  # several workers may write it at once
+        except OSError:
+            pass                                    # a read-only folder just means no cache
+        return graph
 
     def to_geojson(self, edge_props: dict | None = None) -> dict:
         """Edges as a FeatureCollection. edge_props maps edge id to extra properties."""

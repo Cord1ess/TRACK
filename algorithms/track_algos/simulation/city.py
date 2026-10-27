@@ -14,6 +14,9 @@
                    between batches.
     6. Compare     vehicle-hours, roads over capacity, average trip time.
 
+While it runs it publishes a live view for the map (LiveCity): the routes A*
+has just found, and after each landing how full every road the trips used is.
+
 It also keeps what the map needs to replay the run (the level of every road
 the new trips touched, after every batch) and every trip's route, which the
 road-change planner reuses to know which trips pass through an area.
@@ -22,6 +25,8 @@ Honest limit: Google shows how busy roads are, not where people travel. The
 trips here are synthetic, so the result says what TRACK's routing would do for
 that demand, not what happened on Dhaka's streets.
 """
+
+from collections import deque
 
 import numpy as np
 
@@ -74,6 +79,48 @@ def make_trips(graph: RoadGraph, levels: np.ndarray, trips: int, seed: int = 0):
     return [(node_of[a], node_of[b]) for a, b in pairs], zones
 
 
+class LiveCity:
+    """What the map draws while the city simulation runs.
+
+    live-routes.json  the last RECENT routes A* found, newest last
+    live-roads.json   every road the current run's trips use, coloured by how
+                      full it is, rewritten each time load lands, with the
+                      measurements so far"""
+
+    RECENT = 30
+
+    def __init__(self, graph: RoadGraph, progress):
+        self.graph, self.progress = graph, progress
+        self.recent: deque = deque(maxlen=self.RECENT)
+        self.phase = ""
+        self.found = 0
+        self.steps: list[dict] = []                       # one measurement per landing
+
+    def start(self, phase: str) -> None:
+        """A new run of trips. The roads stay as the last landing left them
+        (the all-at-once jam stays on screen until batch 1 lands over it)."""
+        self.phase = phase
+        self.recent.clear()
+
+    def route(self, route: list[int]) -> None:
+        self.found += 1
+        points = [self.graph.edges[e].geometry[0] for e in route] + [self.graph.edges[route[-1]].geometry[-1]]
+        self.recent.append([[round(x, 5), round(y, 5)] for x, y in points])
+        self.progress.live("routes", {"phase": self.phase, "found": self.found, "routes": list(self.recent)})
+
+    def landed(self, label: str, assignment: "Assignment", measured: dict) -> None:
+        self.steps.append({"label": label, **measured})
+        touched = sorted({e for route in assignment.routes for e in route})
+        geometry, colours = [], []
+        for edge_id in touched:
+            edge = self.graph.edges[edge_id]
+            geometry.append([[round(x, 5), round(y, 5)] for x, y in edge.geometry])
+            colours.append(str(load_level(assignment.volume_over_capacity(edge_id))))
+        self.progress.live("roads", {"phase": label, "steps": self.steps, "geometry": geometry,
+                                     "levels": "".join(colours)}, force=True)
+        self.progress.live("routes", {"phase": label, "found": self.found, "routes": []}, force=True)
+
+
 def run_city(graph: RoadGraph, levels: np.ndarray, trips: int = 2000, batches: int = 10,
              vehicles_per_trip: float = 10.0, seed: int = 0, progress=None) -> dict:
     background = background_volume(graph, levels)
@@ -82,15 +129,27 @@ def run_city(graph: RoadGraph, levels: np.ndarray, trips: int = 2000, batches: i
     od, zones = make_trips(graph, levels, trips, seed)
 
     before = Assignment(graph, background).measure()
+    live = LiveCity(graph, progress) if progress else None
+    if live:
+        live.steps.append({"label": "before the trips", **before})
 
     naive = Assignment(graph, background, progress)
     naive.trips_total = 2 * len(od)                   # both runs, for the progress bar
+    if live:
+        live.start("all at once: every trip routed on today's roads")
+        naive.on_route = live.route
     naive.all_at_once(od, vehicles_per_trip)
+    naive_result = naive.measure()
+    if live:
+        live.landed("all at once: the load lands", naive, naive_result)
 
     batched = Assignment(graph, background, progress)
     batched.trips_done, batched.trips_total = naive.trips_done, 2 * len(od)
     after_each_batch = []
     snapshots = []
+    if live:
+        live.start(f"in batches: batch 1 of {batches}")
+        batched.on_route = live.route
 
     def record(number, assignment):
         after_each_batch.append(assignment.measure())
@@ -98,6 +157,9 @@ def run_city(graph: RoadGraph, levels: np.ndarray, trips: int = 2000, batches: i
         if progress:
             progress.step("assignment", f"batch {number} of {batches} landed",
                           assignment.trips_done, assignment.trips_total)
+        if live:
+            live.landed(f"in batches: batch {number} of {batches} landed", assignment, after_each_batch[-1])
+            live.phase = f"in batches: batch {number + 1} of {batches}"
 
     batched.in_batches(od, batches, vehicles_per_trip, after_batch=record)
 
@@ -116,7 +178,7 @@ def run_city(graph: RoadGraph, levels: np.ndarray, trips: int = 2000, batches: i
         "trips": len(od), "batches": batches, "vehicles_per_trip": vehicles_per_trip,
         "vehicles": round(len(od) * vehicles_per_trip),
         "searches": naive.searches + batched.searches,
-        "results": {"before": before, "all_at_once": naive.measure(), "in_batches": batched.measure(),
+        "results": {"before": before, "all_at_once": naive_result, "in_batches": batched.measure(),
                     "after_each_batch": after_each_batch},
         "zones": [{"id": z["id"], "lon": z["lon"], "lat": z["lat"], "weight": round(z["weight"], 2)}
                   for z in zones],

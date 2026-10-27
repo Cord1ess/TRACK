@@ -311,8 +311,9 @@ class RoadChangePlanner:
                 through[(enter, leave)] += vehicles
         return [(a, b, v) for (a, b), v in sorted(through.items())]
 
-    def score(self, layout: dict, batches: int = 4) -> dict:
-        """Total vehicle-hours on the area's roads under this layout."""
+    def score(self, layout: dict, batches: int = 4, on_route=None) -> dict:
+        """Total vehicle-hours on the area's roads under this layout.
+        on_route, if given, is called with every route A* finds (for the live map)."""
         edges = self.layout_edges(layout)
         roads = RoadGraph()
         for e in edges.values():
@@ -325,10 +326,37 @@ class RoadChangePlanner:
         trips = [(a, b) for a, b, _ in self.trips]
         vehicles = [v for _, _, v in self.trips]
         run = Assignment(roads)                     # all the traffic is routed: nothing is fixed
+        run.on_route = on_route
         run.in_batches(trips, batches, vehicles)
         return {"vehicle_hours": run.vehicle_hours(), "unreachable": run.unreachable}
 
     # ── all together ───────────────────────────────────────────────────────────
+
+    def _show_live(self, progress, n, total, changed, routes, result, baseline, results, by_key) -> None:
+        """live-csp.json: the layout being scored, the routes the area's traffic
+        takes under it, and the best layouts so far."""
+        def describe(layout):
+            return [by_key[k].describe(v) for k, v in sorted(layout.items())]
+
+        def point(node):
+            x, y = self.graph.nodes[node]
+            return [round(x, 5), round(y, 5)]
+
+        def line(route):                            # junction to junction along the route
+            return [point(self.graph.edges[e].u) for e in route] + [point(self.graph.edges[route[-1]].v)]
+
+        base = baseline["vehicle_hours"]
+        leaders = sorted(results, key=lambda r: r[0])[:3]
+        progress.live("csp", {
+            "area": {**self.area, "change_radius_m": CHANGE_RADIUS_M},
+            "options": [{"key": o.key, "kind": o.kind, "name": o.name,
+                         "geometry": [[round(x, 5), round(y, 5)] for x, y in o.geometry]} for o in self.options],
+            "scored": n, "total": total, "layout": changed, "describe": describe(changed),
+            "change_pct": round(100.0 * (result["vehicle_hours"] - base) / base, 2),
+            "baseline_vehicle_hours": round(base, 1),
+            "best": [{"change_pct": round(100.0 * (h - base) / base, 2), "describe": describe(c)} for h, c in leaders],
+            "routes": [line(route) for route in routes],
+        })
 
     def plan(self, max_changes: int = 2, keep: int = 10, progress=None) -> dict:
         csp = self.problem(max_changes)
@@ -336,6 +364,7 @@ class RoadChangePlanner:
             progress.step("CSP", f"{len(self.options)} options, at most {max_changes} changes")
         layouts = csp.solve(progress)
 
+        by_key = {o.key: o for o in self.options}
         baseline = self.score({})
         results = []
         for n, layout in enumerate(layouts, 1):
@@ -344,13 +373,15 @@ class RoadChangePlanner:
             changed = {k: v for k, v in layout.items() if v != self.today[k]}
             if not changed:
                 continue
-            result = self.score(changed)
+            routes = []
+            result = self.score(changed, on_route=routes.append if progress else None)
             if result["unreachable"]:
                 continue                           # a trip lost its way: not a real layout
             results.append((result["vehicle_hours"], changed))
+            if progress:
+                self._show_live(progress, n, len(layouts), changed, routes, result, baseline, results, by_key)
 
         results.sort(key=lambda r: r[0])
-        by_key = {o.key: o for o in self.options}
         best = [{"vehicle_hours": round(hours, 1),
                  "change_pct": round(100.0 * (hours - baseline["vehicle_hours"]) / baseline["vehicle_hours"], 2),
                  "changes": [{"option": key, "value": value, "text": by_key[key].describe(value)}

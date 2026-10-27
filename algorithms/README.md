@@ -37,6 +37,7 @@ A plain-language guide to each algorithm, and how to show it, is in
 | `simulation/demand.py` | Trips between zones from a gravity model |
 | `simulation/assignment.py` | Routes trips with A*, all at once or in batches with feedback |
 | `simulation/city.py` | The city-wide experiment |
+| `simulation/diversion.py` | The real traffic over time, steered around jams: actual against with TRACK |
 | `planning/csp.py` | A CSP solver: backtracking with forward checking |
 | `planning/road_changes.py` | Street changes for one area, as a CSP, scored with A* |
 | `layers.py` | Runs the per-capture algorithms and writes one map layer each |
@@ -65,6 +66,7 @@ python simulate.py history                                  every capture into o
 python simulate.py forecast                                 K-means, KNN, logistic regression, tested
 python simulate.py city --day tuesday --time 17:00 --trips 2000
 python simulate.py changes --area farmgate --max-changes 2  run city first
+python simulate.py diversion --capture dhaka-2026-09-29T1305Z --minutes 90
 ```
 
 Reads every `../week*/weights` folder (or `--weights`), writes JSON into

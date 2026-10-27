@@ -17,6 +17,7 @@ opened exactly once.
 import argparse
 import csv
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -101,6 +102,32 @@ def sample_points(graph: RoadGraph, step_m: float, trim_m: float = 10.0):
             np.concatenate(dlons), np.concatenate(dlats), np.asarray(ids, dtype=np.int64))
 
 
+def sample_points_cached(graph: RoadGraph, step_m: float, trim_m: float, cache_dir: Path | None):
+    """sample_points, computed once per graph and reused by every capture.
+
+    The points depend only on the graph and the spacing, never on the
+    capture, and walking 110,382 edges in Python was 40 % of decoding a
+    capture. The file name carries the graph's id and the settings, so a new
+    graph or a different spacing never reads old points."""
+    if cache_dir is None:
+        return sample_points(graph, step_m, trim_m)
+    cache = Path(cache_dir) / f"samples-{graph.graph_id()}-{step_m:g}m-trim{trim_m:g}m.npz"
+    names = ("eidx", "lon", "lat", "dlon", "dlat", "ids")
+    try:
+        with np.load(cache) as held:
+            return tuple(held[n] for n in names)
+    except Exception:
+        pass                                        # missing or unreadable: compute it
+    points = sample_points(graph, step_m, trim_m)
+    try:
+        tmp = cache.with_name(f"{cache.stem}.{os.getpid()}.tmp.npz")
+        np.savez(tmp, **dict(zip(names, points)))
+        os.replace(tmp, cache)                      # several workers may write it at once
+    except OSError:
+        pass
+    return points
+
+
 def classify_samples(store: TileStore, lon, lat, dlon, dlat, offset_px: float, win: int,
                      log=print) -> np.ndarray:
     """Class id (0..4) for every sample point, read from the tiles."""
@@ -145,11 +172,11 @@ def classify_samples(store: TileStore, lon, lat, dlon, dlat, offset_px: float, w
 
 def decode_capture(capture_dir, graph: RoadGraph, offset_px: float = 4.0, step_m: float = 5.0,
                    win: int = 1, min_coverage: float = 0.25, trim_m: float = 10.0,
-                   log=print) -> list[dict]:
+                   log=print, cache_dir: Path | None = None) -> list[dict]:
     """One row per edge: weight, coverage and colour mix."""
     store = TileStore(capture_dir)
     log(f"  capture z{store.zoom}, {len(store.available)} tiles, slot {store.slot_utc}")
-    eidx, lon, lat, dlon, dlat, ids = sample_points(graph, step_m, trim_m)
+    eidx, lon, lat, dlon, dlat, ids = sample_points_cached(graph, step_m, trim_m, cache_dir)
     log(f"  {eidx.size} sample points along {ids.size} edges")
     cls = classify_samples(store, lon, lat, dlon, dlat, offset_px, win, log=log)
 
@@ -253,7 +280,7 @@ def main() -> int:
     gid = graph.graph_id()
     print(f"graph: {len(graph.edges)} edges, id {gid}")
     rows = decode_capture(args.capture, graph, args.offset_px, args.step_m, args.win,
-                          args.min_coverage, args.trim_m)
+                          args.min_coverage, args.trim_m, cache_dir=args.graph.parent)
     write_csv(rows, args.out, {"graph_id": gid, "capture": args.capture.name,
                                "offset_px": args.offset_px, "step_m": args.step_m,
                                "trim_m": args.trim_m, "min_coverage": args.min_coverage})

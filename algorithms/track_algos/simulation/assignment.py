@@ -38,6 +38,7 @@ class Assignment:
         self.trips_done = 0                     # trips routed (a repeat journey reuses a search)
         self.trips_total = 0                    # trips this run will route, for the progress bar
         self.progress = progress                # optional: reports what is running
+        self.on_route = None                    # optional: called with each new route, for the live map
 
     # ── the cost of a road ────────────────────────────────────────────────────
 
@@ -72,6 +73,8 @@ class Assignment:
             journey = (origin, destination)
             if journey not in found:
                 found[journey] = self.route(origin, destination)
+                if self.on_route and found[journey]:
+                    self.on_route(found[journey])
             route = found[journey]
             routes.append(route)
             if route is None:

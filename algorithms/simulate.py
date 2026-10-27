@@ -8,6 +8,9 @@
                                               all at once against in batches
     python simulate.py changes --area farmgate --max-changes 2
                                               CSP: which street changes help an area
+    python simulate.py diversion --capture dhaka-2026-09-22T1305Z --minutes 90
+                                              the real traffic from that capture on,
+                                              against the same traffic steered around jams
 
 Each command writes one JSON file into --out (default output/simulation) for
 the map to show, and keeps --progress (default <out>/progress.json) up to date
@@ -23,6 +26,7 @@ Where each step's code lives:
                track_algos/forecast/evaluate.py    (the test)
     city       track_algos/simulation/city.py      (demand.py, assignment.py, A*)
     changes    track_algos/planning/road_changes.py, csp.py
+    diversion  track_algos/simulation/diversion.py (A* detours, the coordinator)
 """
 
 import argparse
@@ -43,6 +47,7 @@ from track_algos.graph.road_graph import RoadGraph
 from track_algos.planning.road_changes import RoadChangePlanner
 from track_algos.progress import Progress
 from track_algos.simulation.city import run_city
+from track_algos.simulation.diversion import run_diversion
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
@@ -137,9 +142,35 @@ def cmd_changes(args, graph, progress) -> dict:
     return result
 
 
+def cmd_diversion(args, graph, progress) -> dict:
+    """Actual traffic against the same traffic steered around the jams, from one
+    capture forward through the real captures for --minutes."""
+    if not args.capture:
+        raise SystemExit("give --capture: the capture to start from")
+    folders = [Path(f) for f in args.weights] if args.weights else sorted(REPO.glob("week*/weights"))
+    files = {}
+    for folder in folders:
+        for f in sorted(Path(folder).glob("dhaka-*.csv.gz")):
+            files.setdefault(f.name[:-len(".csv.gz")], f)          # a capture in two weeks counts once
+    if args.capture not in files:
+        raise SystemExit(f"{args.capture} is not processed")
+    start = history_mod.capture_time(args.capture)
+    names = [n for n in sorted(files, key=history_mod.capture_time)
+             if 0 <= history_mod.capture_time(n) - start <= args.minutes * 60]
+    progress.step("captures", f"reading {len(names)} captures, {args.minutes} minutes from {args.capture}")
+    captures = [(n, history_mod.read_levels(files[n], len(graph.edges))[0]) for n in names]
+    result = run_diversion(graph, captures, progress)
+    first, last = history_mod.capture_time(names[0]), history_mod.capture_time(names[-1])
+    result["from"] = label(datetime.fromtimestamp(first, history_mod.DHAKA))
+    result["to"] = label(datetime.fromtimestamp(last, history_mod.DHAKA))
+    result["captures"] = names
+    result["minutes"] = round((last - first) / 60)
+    return result
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["history", "forecast", "city", "changes"])
+    ap.add_argument("command", choices=["history", "forecast", "city", "changes", "diversion"])
     ap.add_argument("--graph", type=Path, default=HERE / "output" / "graph" / "dhaka.json")
     ap.add_argument("--weights", nargs="*", help="folders of processed captures (default: ../week*/weights)")
     ap.add_argument("--history", type=Path, default=HERE / "output" / "history")
@@ -160,6 +191,9 @@ def main() -> int:
     ap.add_argument("--area", choices=sorted(AREAS), default="farmgate")
     ap.add_argument("--max-changes", type=int, default=2)
     ap.add_argument("--streets", type=int, default=8, help="side streets the planner may change")
+    # diversion
+    ap.add_argument("--capture", help="the capture to start from, e.g. dhaka-2026-09-22T1305Z")
+    ap.add_argument("--minutes", type=int, default=90, help="how far forward to run")
     args = ap.parse_args()
 
     progress = Progress(args.progress or args.out / "progress.json", task=args.command)
@@ -168,8 +202,8 @@ def main() -> int:
         graph = RoadGraph.load(args.graph)
         if sorted(graph.edges) != list(range(len(graph.edges))):
             raise SystemExit("edge ids are not 0..n-1; the history table needs them to be")
-        handler = {"history": cmd_history, "forecast": cmd_forecast,
-                   "city": cmd_city, "changes": cmd_changes}[args.command]
+        handler = {"history": cmd_history, "forecast": cmd_forecast, "city": cmd_city,
+                   "changes": cmd_changes, "diversion": cmd_diversion}[args.command]
         result = handler(args, graph, progress)
         result["seconds"] = round(time.time() - started, 1)
         result["built"] = datetime.now(history_mod.DHAKA).strftime("%d %b %I:%M %p")
