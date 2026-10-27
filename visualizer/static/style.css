@@ -452,3 +452,23 @@ body.dark #stopPop .warn { color: #f0a646; }
 .simout .layout ul { margin: 4px 0 0; padding-left: 16px; }
 .simout .scen { padding: 5px 0; border-bottom: 1px solid var(--border-soft); }
 .simout .scen b { color: var(--text); }
+
+/* the live view while a simulation runs */
+.simlive .phase { font-size: 13px; font-weight: 600; color: var(--text); margin: 2px 0 6px; }
+.simlive .phase .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px;
+  background: var(--accent); animation: simpulse 1.2s ease-in-out infinite; vertical-align: 1px; }
+.simlive tr.now td { color: var(--text); font-weight: 600; }
+.simlive .testing { padding: 6px 8px; border-radius: 6px; background: var(--inset); margin: 6px 0; }
+.simlive .testing b { color: var(--text); }
+@keyframes simpulse { 50% { opacity: .25; } }
+
+/* the diversion player: two timelines on one clock */
+.divplayer { margin-top: 8px; }
+.divplayer .clock { font-size: 15px; font-weight: 600; color: var(--text); margin: 6px 0 4px; font-variant-numeric: tabular-nums; }
+.divplayer .clock small { font-size: 11px; font-weight: 400; color: var(--text-3); margin-left: 6px; }
+.divplayer input[type=range] { width: 100%; }
+.divplayer .controls { display: flex; gap: 6px; align-items: center; margin: 6px 0; }
+.divplayer .controls .seg { flex: 1; }
+.divplayer td i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; }
+.divplayer .better { color: var(--on); font-weight: 600; }
+.divplayer .worse { color: #e5484d; font-weight: 600; }

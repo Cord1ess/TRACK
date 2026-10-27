@@ -4,10 +4,16 @@
    algorithms/simulate.py, and the page then reads two kinds of file:
 
      /api/sim            what is running now (algorithm, message, done of total)
-     /sim/<result>.json  a finished result: history, forecast, city, changes-<area>
+     /sim/<result>.json  a finished result: history, forecast, city, changes-<area>,
+                         diversion (its player lives in diversion.js)
 
    On GitHub Pages there is no server, so the site shows the results that were
    published with it and the Run buttons are hidden.
+
+   While a run goes the page also reads its live snapshots (live-routes,
+   live-roads, live-csp) about twice a second and draws them: the routes A* has
+   just found, how full the roads are after each batch lands, and the road
+   layout the CSP is scoring with the routes the area's traffic takes under it.
 
    Two map layers come from the results:
 
@@ -16,9 +22,10 @@
      road changes  the area's circle and its candidate streets, with the
                    changes of the chosen layout highlighted */
 
-import { $, RAMP, attempt, escapeHtml, map, state } from "./core.js";
+import { $, RAMP, attempt, clock12, dayLabel, escapeHtml, map, state } from "./core.js";
 import { SITE, STATIC, getManifest, loadManifest } from "./api.js";
 import { hasLayer, hasSource, registerLayers, setLayout, setPaint, ensureLayers } from "./mapkit.js";
+import { liveEnded, loadDiversion, showLive } from "./diversion.js";
 
 const sim = state.sim = {
   results: {},          // name -> parsed JSON
@@ -30,10 +37,15 @@ const sim = state.sim = {
   area: "farmgate",
   layout: 0,            // which of the area's best layouts is highlighted
   showCity: true,
+  live: { stamps: {}, routes: null, roads: null, csp: null, framed: false, version: 0 },
 };
 
 const CITY = { src: "gj:sim-city", line: "gj:sim-city:line" };
 const CHANGE = { src: "gj:sim-change", line: "gj:sim-change:line" };
+const LIVE_ROADS = { src: "gj:sim-live-roads", line: "gj:sim-live-roads:line" };
+const LIVE_ROUTES = { src: "gj:sim-live-routes", line: "gj:sim-live-routes:line" };
+const EMPTY = { type: "FeatureCollection", features: [] };
+const DHAKA_BOUNDS = [[90.326774, 23.711736], [90.499678, 23.902086]];   // the capture area
 const fmt = (n, digits = 0) => Number(n).toLocaleString(undefined,
   { minimumFractionDigits: digits, maximumFractionDigits: digits });
 const pct = (x) => `${(100 * x).toFixed(1)}%`;
@@ -53,7 +65,7 @@ async function fetchResult(name) {
   } catch { return null; }
 }
 
-async function refreshResults(status) {
+async function refreshResults(status, finished = "") {
   const names = STATIC
     ? Object.keys((getManifest() || await loadManifest() || {}).simulation || {})
     : Object.keys(status.results || {});
@@ -65,6 +77,7 @@ async function refreshResults(status) {
     sim.results[name] = data;
     sim.modified[name] = stamp;
     if (name === "city") sim.step = Math.min(sim.step, data.replay.steps.length - 1);
+    if (name === "diversion") loadDiversion(data, finished === "diversion");
     if (name.startsWith("changes-")) sim.layout = 0;
   }
   renderAll();
@@ -101,10 +114,12 @@ async function poll() {
     sim.task = status.task || sim.task;
     renderStatus(status);
     renderButtons(status.can_run);
-    if (!status.running) await refreshResults(status);
+    if (status.running) await refreshLive(status.live || {});
+    else if (was || sim.live.version) clearLive();
+    if (!status.running) await refreshResults(status, was ? sim.task : "");
     else if (!was) renderButtons(status.can_run);
   }
-  pollTimer = setTimeout(poll, sim.running ? 1000 : 5000);
+  pollTimer = setTimeout(poll, sim.running ? 600 : 5000);
 }
 
 function renderStatus(status) {
@@ -129,12 +144,102 @@ function renderStatus(status) {
 }
 
 function renderButtons(canRun = true) {
-  for (const id of ["simRunForecast", "simRunCity", "simRunChanges"]) {
+  for (const id of ["simRunForecast", "simRunCity", "simRunChanges", "simRunDiversion"]) {
     const b = $(id);
     if (!b) continue;
     b.hidden = STATIC || !canRun;
     b.disabled = sim.running;
   }
+}
+
+/* ── live: what the running simulation is doing right now ─────────────────── */
+
+async function refreshLive(stamps) {
+  let changed = false;
+  for (const [name, stamp] of Object.entries(stamps)) {
+    if (sim.live.stamps[name] === stamp) continue;
+    const data = await fetchResult(name);
+    if (!data) continue;                                  // mid-write: the next poll gets it
+    sim.live[name.slice("live-".length)] = data;
+    sim.live.stamps[name] = stamp;
+    changed = true;
+  }
+  if (!changed) return;
+  sim.live.version += 1;
+  if (sim.live.diversion) { await showLive(sim.live.diversion, $("simLive")); return; }
+  renderLive();
+  frameLive();
+  applySimLayers();
+}
+
+function clearLive() {
+  if (sim.live.diversion) liveEnded();
+  sim.live = { stamps: {}, routes: null, roads: null, csp: null, framed: false, version: 0 };
+  $("simLive").innerHTML = "";
+  applySimLayers();
+}
+
+const liveOn = () => sim.running && sim.live.version > 0;
+// The city replay and the road-change drawing are results to look at in this
+// tab. Left on the map elsewhere they covered the traffic, and the Google and
+// TRACK switches could not turn them off.
+const simTabOpen = () => !!document.querySelector('.tabpanel[data-panel="simulate"].on');
+const signed = (x) => `${x > 0 ? "+" : ""}${x.toFixed(2)}%`;
+
+function renderLive() {
+  const box = $("simLive");
+  const { roads, routes, csp } = sim.live;
+  if (csp) {
+    const best = csp.best.map((b) => `<li><b class="${b.change_pct < 0 ? "best" : ""}">${signed(b.change_pct)}</b>
+        ${b.describe.map(escapeHtml).join(" + ")}</li>`).join("");
+    box.innerHTML = `
+      <div class="phase"><span class="dot"></span>CSP: scoring layout ${fmt(csp.scored)} of ${fmt(csp.total)} with A*</div>
+      <div class="testing">Testing: <b>${csp.describe.map(escapeHtml).join(" + ")}</b><br>
+        ${fmt(csp.routes.length)} routes through ${escapeHtml(csp.area.name)} ·
+        <b class="${csp.change_pct < 0 ? "best" : ""}">${signed(csp.change_pct)}</b> vehicle-hours
+        against today (${fmt(csp.baseline_vehicle_hours)})</div>
+      <p class="note"><b>Best so far</b></p><ul>${best}</ul>`;
+    return;
+  }
+  if (!roads && !routes) { box.innerHTML = ""; return; }
+  const phase = (routes && routes.phase) || (roads && roads.phase) || "";
+  const steps = (roads && roads.steps) || [];
+  const rows = steps.map((m, i) => `<tr class="${i === steps.length - 1 ? "now" : ""}"><td>${escapeHtml(m.label)}</td>
+      <td>${fmt(m.vehicle_hours)}</td><td>${fmt(m.roads_over_capacity)}</td>
+      <td>${m.mean_trip_minutes ? m.mean_trip_minutes.toFixed(1) : "—"}</td></tr>`).join("");
+  box.innerHTML = `
+    <div class="phase"><span class="dot"></span>${escapeHtml(phase)}</div>
+    <p class="note">${fmt(routes ? routes.found : 0)} routes found by A* so far. Blue lines: the newest
+      routes. Roads: how full they are with the trips added so far.</p>
+    <table><tr><th></th><th>Vehicle-hours</th><th>Over capacity</th><th>Trip min</th></tr>${rows}</table>`;
+}
+
+function frameLive() {
+  if (sim.live.framed) return;
+  if (sim.live.csp) {
+    const a = sim.live.csp.area;
+    map.flyTo({ center: [a.lon, a.lat], zoom: 14.6, duration: 900 });
+  } else {
+    map.fitBounds(DHAKA_BOUNDS, { padding: 40, duration: 900 });
+  }
+  sim.live.framed = true;
+}
+
+function liveRoadsData() {
+  const r = sim.live.roads;
+  if (!r || !liveOn()) return EMPTY;
+  return { type: "FeatureCollection", features: r.geometry.map((coords, i) => ({
+    type: "Feature", properties: { lv: Number(r.levels[i]) }, geometry: { type: "LineString", coordinates: coords } })) };
+}
+
+function liveRoutesData() {
+  if (!liveOn()) return EMPTY;
+  const list = sim.live.csp ? sim.live.csp.routes : (sim.live.routes ? sim.live.routes.routes : []);
+  const n = list.length;
+  return { type: "FeatureCollection", features: list.filter((c) => c.length > 1).map((coords, i) => ({
+    // city: newest route brightest; CSP: every route of the layout being scored, equally
+    type: "Feature", properties: { fresh: sim.live.csp ? 0.6 : (n > 1 ? i / (n - 1) : 1) },
+    geometry: { type: "LineString", coordinates: coords } })) };
 }
 
 /* ── the three result panels ──────────────────────────────────────────────── */
@@ -249,10 +354,12 @@ function cityColour() {
 const CHANGE_COLOURS = { "closed": "#e5484d", "one-way forward": "#7c3aed", "one-way backward": "#7c3aed" };
 
 function changeData() {
-  const ch = sim.results[`changes-${sim.area}`];
+  const live = liveOn() && sim.live.csp;
+  const ch = live ? { area: sim.live.csp.area, options: sim.live.csp.options } : sim.results[`changes-${sim.area}`];
   if (!ch) return null;
   const chosen = {};
-  for (const c of (ch.best[sim.layout] || { changes: [] }).changes) chosen[c.option] = c.value;
+  if (live) Object.assign(chosen, sim.live.csp.layout);
+  else for (const c of (ch.best[sim.layout] || { changes: [] }).changes) chosen[c.option] = c.value;
   const ring = [];
   const { lon, lat, change_radius_m: r } = ch.area;
   for (let a = 0; a <= 64; a++) {
@@ -289,11 +396,29 @@ function addLayers() {
       paint: { "line-color": ["get", "colour"], "line-width": ["get", "width"], "line-opacity": 0.95 } });
     added = true;
   }
+  if (!hasSource(LIVE_ROADS.src)) { map.addSource(LIVE_ROADS.src, { type: "geojson", data: EMPTY }); added = true; }
+  if (!hasLayer(LIVE_ROADS.line)) {
+    map.addLayer({ id: LIVE_ROADS.line, type: "line", source: LIVE_ROADS.src,
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": ["match", ["get", "lv"], 0, RAMP[0], 1, RAMP[1], 2, RAMP[2], 3, RAMP[3], "#9e9e9e"],
+               "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1.4, 14, 3.4, 17, 6] } });
+    added = true;
+  }
+  if (!hasSource(LIVE_ROUTES.src)) { map.addSource(LIVE_ROUTES.src, { type: "geojson", data: EMPTY }); added = true; }
+  if (!hasLayer(LIVE_ROUTES.line)) {
+    map.addLayer({ id: LIVE_ROUTES.line, type: "line", source: LIVE_ROUTES.src,
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": "#0a84ff",
+               "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1.6, 14, 3, 17, 5],
+               "line-opacity": ["interpolate", ["linear"], ["get", "fresh"], 0, 0.25, 1, 0.95] } });
+    added = true;
+  }
   return added;
 }
 
 let shownCity = null;
 let shownChange = "";
+let shownLive = -1;
 function applySimLayers() {
   const city = sim.results.city;
   if (hasSource(CITY.src) && city && shownCity !== city) {
@@ -301,14 +426,20 @@ function applySimLayers() {
     shownCity = city;
   }
   setPaint(CITY.line, "line-color", cityColour());
-  setLayout(CITY.line, "visibility", sim.showCity && city ? "visible" : "none");
-  const key = `${sim.area}|${sim.layout}|${sim.modified[`changes-${sim.area}`] || ""}`;
+  setLayout(CITY.line, "visibility", sim.showCity && city && !liveOn() && simTabOpen() ? "visible" : "none");
+  if (hasSource(LIVE_ROADS.src) && shownLive !== sim.live.version) {
+    attempt("sim live roads", () => map.getSource(LIVE_ROADS.src).setData(liveRoadsData()));
+    attempt("sim live routes", () => map.getSource(LIVE_ROUTES.src).setData(liveRoutesData()));
+    shownLive = sim.live.version;
+  }
+  const key = liveOn() && sim.live.csp ? `live|${sim.live.version}`
+    : `${sim.area}|${sim.layout}|${sim.modified[`changes-${sim.area}`] || ""}`;
   const data = changeData();
   if (hasSource(CHANGE.src) && data && key !== shownChange) {
     attempt("sim change data", () => map.getSource(CHANGE.src).setData(data));
     shownChange = key;
   }
-  setLayout(CHANGE.line, "visibility", data ? "visible" : "none");
+  setLayout(CHANGE.line, "visibility", data && simTabOpen() ? "visible" : "none");
 }
 
 function flyToArea() {
@@ -356,6 +487,15 @@ export async function startSimulate() {
     vehicles: Number(value("simVehicles")), model: value("simModel") });
   $("simRunChanges").onclick = () => run({ task: "changes", area: value("simArea"),
     max_changes: Number(value("simMaxChanges")) });
+  $("simRunDiversion").onclick = () => run({ task: "diversion",
+    capture: state.capture ? state.capture.name : "", minutes: Number(value("simDivMinutes")) });
+  // the run starts from whatever the timeline shows: say which moment that is
+  setInterval(() => {
+    const c = state.capture;
+    const at = c ? Date.parse(c.captured_utc) : NaN;
+    const text = isNaN(at) ? "pick a capture on the timeline" : `${dayLabel(at)} · ${clock12(at)}`;
+    if ($("simDivStart").textContent !== text) $("simDivStart").textContent = text;
+  }, 1000);
   $("simArea").onchange = () => {
     sim.area = value("simArea");
     sim.layout = 0;
@@ -364,6 +504,7 @@ export async function startSimulate() {
     flyToArea();
   };
   if (STATIC) {
+    $("simRunDiversion").closest(".group").hidden = true;      // its frames need the dev server
     renderButtons(false);
     $("simStatus").textContent = "Results published with the site. Running a simulation needs the dev server.";
     await refreshResults({});
@@ -373,3 +514,4 @@ export async function startSimulate() {
 }
 
 registerLayers({ build: addLayers, apply: applySimLayers });
+window.addEventListener("tabchange", () => applySimLayers());

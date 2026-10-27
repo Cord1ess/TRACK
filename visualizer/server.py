@@ -24,8 +24,12 @@ slippy-map tile layer instead of a screenshot:
     GET /frame/<name>?v=<version>           one processed capture's colours, one character
                                             per map line, so the timeline can play the model
     GET /api/sim                            what the simulation is doing, and which results exist
-    GET /sim/<name>.json                    one result: history, forecast, city, changes-<area>
+    GET /sim/<name>.json                    one result: history, forecast, city, changes-<area>,
+                                            or a live snapshot while a run goes: live-routes,
+                                            live-roads, live-csp
     POST /api/sim/run                       start a run: {"task": "city", "trips": 2000, ...}
+    GET /api/sim/frame?run=diversion&step=N one step of the with-TRACK timeline as a map frame
+                                            (run=live: the step the running diversion is on)
     GET /api/graph                          the road graph itself: junction and edge counts
     GET /graph.geojson[?part=nodes|links]   junctions as points, directed edges as lines,
                                             for looking at the network A* actually walks
@@ -69,6 +73,36 @@ MIN_ZOOM = 8   # lowest zoom the server will build; the UI reads it from /api/co
 MODEL: "model_mod.ModelData | None" = None   # TRACK's own decoded + predicted traffic
 GRAPH: "graph_mod.GraphData | None" = None   # the road graph: junctions and directed edges
 WEIGHTS: "Path | None" = None                # processed weight tables, <capture>.csv.gz
+# Several weeks can be shown as one timeline: --captures takes several folders,
+# each with its weight tables beside it. A capture in two folders (weeks that
+# overlap by a day) is taken from the first. CAPTURES and WEIGHTS stay the first
+# folder, which is all build_site.py sets.
+CAPTURE_DIRS: list = []
+WEIGHT_DIRS: list = []
+
+
+def capture_dirs() -> list:
+    return CAPTURE_DIRS or [CAPTURES]
+
+
+def weight_dirs() -> list:
+    return WEIGHT_DIRS or ([WEIGHTS] if WEIGHTS else [])
+
+
+def capture_dir(name: str) -> Path:
+    """The folder holding this capture: the first captures folder that has it."""
+    for root in capture_dirs():
+        if (root / name / "manifest.json").exists():
+            return root / name
+    return CAPTURES / name
+
+
+def weight_file(name: str) -> "Path | None":
+    for root in weight_dirs():
+        f = root / f"{name}.csv.gz"
+        if f.is_file():
+            return f
+    return None
 ALGORITHMS = (HERE.parent / "algorithms").resolve()
 
 _LOCK = threading.Lock()
@@ -216,11 +250,13 @@ def processed_index(caps: list[dict]) -> tuple[dict, set]:
     """{name: weight table path} for captures processed by the current model,
     and the names whose table came from the old one."""
     done, stale = {}, set()
-    if WEIGHTS and WEIGHTS.exists():
-        names = {c["name"] for c in caps}
-        for f in WEIGHTS.glob("*.csv.gz"):
+    names = {c["name"] for c in caps}
+    for root in weight_dirs():
+        if not root.exists():
+            continue
+        for f in root.glob("*.csv.gz"):
             n = f.name[:-len(".csv.gz")]
-            if n not in names:
+            if n not in names or n in done or n in stale:
                 continue
             if _current_model(f):
                 done[n] = f
@@ -263,13 +299,12 @@ def frame_source(name: str) -> Path | None:
     request, which held playback at 7 captures a second."""
     if not name or "/" in name or "\\" in name or ".." in name:
         return None                              # a name, never a path
-    if WEIGHTS:
-        f = WEIGHTS / f"{name}.csv.gz"
-        if f.is_file() and _current_model(f):
-            return f
+    f = weight_file(name)
+    if f and _current_model(f):
+        return f
     slot = base_capture_slot()
     if slot:
-        m = _manifest(CAPTURES / name / "manifest.json")
+        m = _manifest(capture_dir(name) / "manifest.json")
         if m and m.get("captured_utc") == slot:
             return MODEL.csv_path
     return None
@@ -281,6 +316,12 @@ def frame_source(name: str) -> Path | None:
 # reads those files back. One run at a time.
 
 SIM_RESULTS = ("history", "forecast", "city", "changes-farmgate", "changes-mohakhali")
+SIM_LIVE = ("live-routes", "live-roads", "live-csp", "live-diversion")   # written while a run goes
+# The diversion result holds a level for every road at every step (megabytes),
+# so it is not published to the static site: the map turns its steps into
+# frames through /api/sim/frame, which needs the dev server.
+SIM_LOCAL = ("diversion",)
+_SIM_PARSED: dict = {}                  # file -> (mtime, parsed JSON), for the frame route
 SIM_DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 SIM_JOB: dict = {"process": None, "task": ""}
 
@@ -301,12 +342,17 @@ def sim_status() -> dict:
     except (OSError, ValueError):
         pass
     results = {}
-    for name in SIM_RESULTS:
+    for name in SIM_RESULTS + SIM_LOCAL:
         f = sim_dir() / f"{name}.json"
         if f.exists():
             results[name] = {"modified": int(f.stat().st_mtime), "bytes": f.stat().st_size}
+    live = {}
+    for name in SIM_LIVE:                       # nanoseconds: these change several times a second
+        f = sim_dir() / f"{name}.json"
+        if f.exists():
+            live[name] = f.stat().st_mtime_ns
     return {"running": sim_running(), "task": SIM_JOB["task"], "progress": progress,
-            "results": results, "can_run": (ALGORITHMS / "simulate.py").exists()}
+            "results": results, "live": live, "can_run": (ALGORITHMS / "simulate.py").exists()}
 
 
 def sim_command(body: dict) -> list[str]:
@@ -332,15 +378,57 @@ def sim_command(body: dict) -> list[str]:
             raise ValueError("trips 50-20000, batches 1-50, vehicles 1-200, model knn or logistic")
         args = ["--day", day, "--time", clock, "--trips", str(trips), "--batches", str(batches),
                 "--vehicles", str(vehicles), "--model", model]
+    elif task == "diversion":
+        capture, minutes = str(body.get("capture", "")), int(body.get("minutes", 90))
+        if not re.fullmatch(r"dhaka-\d{4}-\d{2}-\d{2}T\d{4}Z", capture) or weight_file(capture) is None:
+            raise ValueError("capture must be a processed capture's name")
+        if not 15 <= minutes <= 240:
+            raise ValueError("minutes 15 to 240")
+        args = ["--capture", capture, "--minutes", str(minutes)]
     elif task == "changes":
         area, most = str(body.get("area", "farmgate")), int(body.get("max_changes", 2))
         if area not in ("farmgate", "mohakhali") or not 1 <= most <= 3:
             raise ValueError("area farmgate or mohakhali, max_changes 1 to 3")
         args = ["--area", area, "--max-changes", str(most)]
     else:
-        raise ValueError("task must be history, forecast, city or changes")
+        raise ValueError("task must be history, forecast, city, changes or diversion")
     return [sys.executable, "-B", "simulate.py", task, "--out", str(sim_dir()),
             "--progress", str(sim_dir() / "progress.json"), *args]
+
+
+def sim_json(name: str):
+    """A simulation file, parsed once per change: the diversion result is a few
+    megabytes and each frame request would otherwise parse it again."""
+    f = sim_dir() / f"{name}.json"
+    try:
+        mtime = f.stat().st_mtime_ns
+        held = _SIM_PARSED.get(name)
+        if held and held[0] == mtime:
+            return held[1]
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    _SIM_PARSED[name] = (mtime, data)
+    return data
+
+
+def sim_frame(run: str, step: int) -> "dict | None":
+    """One with-TRACK step as a map frame: the step's levels painted over the
+    real capture it belongs to, keeping which roads Google painted."""
+    if run == "live":
+        data = sim_json("live-diversion")
+        levels, capture = (data or {}).get("levels"), (data or {}).get("capture")
+    else:
+        data = sim_json("diversion")
+        if not data or not 0 <= step < len(data["levels"]):
+            return None
+        levels, capture = data["levels"][step], data["steps"][step]["capture"]
+    path = weight_file(capture) if capture else None
+    if not levels or path is None:
+        return None
+    frame = MODEL.frame(path, np.frombuffer(levels.encode("ascii"), dtype=np.uint8) - 48)
+    frame["capture"] = capture
+    return frame
 
 
 def sim_start(body: dict) -> dict:
@@ -348,7 +436,8 @@ def sim_start(body: dict) -> dict:
         raise RuntimeError(f"a {SIM_JOB['task']} run is still going")
     command = sim_command(body)
     sim_dir().mkdir(parents=True, exist_ok=True)
-    (sim_dir() / "progress.json").unlink(missing_ok=True)
+    for name in ("progress", *SIM_LIVE):        # nothing from the last run may show as live
+        (sim_dir() / f"{name}.json").unlink(missing_ok=True)
     SIM_JOB["process"] = subprocess.Popen(
         command, cwd=ALGORITHMS, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
@@ -358,9 +447,13 @@ def sim_start(body: dict) -> dict:
 
 def list_captures() -> list[dict]:
     out = []
-    if not CAPTURES.exists():
-        return out
-    for d in sorted(CAPTURES.iterdir()):
+    folders = {}
+    for root in capture_dirs():
+        if root.exists():
+            for d in root.iterdir():
+                folders.setdefault(d.name, d)            # the first folder holding a name wins
+    for name in sorted(folders):
+        d = folders[name]
         mp = d / "manifest.json"
         if not d.is_dir():
             continue
@@ -455,7 +548,7 @@ def warm_frames(done: dict) -> None:
 
 @lru_cache(maxsize=64)
 def capture_zoom(name: str) -> int | None:
-    mp = CAPTURES / name / "manifest.json"
+    mp = capture_dir(name) / "manifest.json"
     if not mp.exists():
         return None
     return int(json.loads(mp.read_text(encoding="utf-8")).get("zoom", 17))
@@ -499,7 +592,7 @@ def tile_bytes(name: str, z: int, x: int, y: int, clean: bool = False) -> bytes 
     native = capture_zoom(name)
     if native is None or z > native or z < MIN_ZOOM:
         return None
-    root = CAPTURES / name
+    root = capture_dir(name)
     if z == native:
         p = root / "tiles" / f"z{z}_{x}_{y}.png"
         if not p.exists():
@@ -525,7 +618,7 @@ def tile_bytes(name: str, z: int, x: int, y: int, clean: bool = False) -> bytes 
 
 def build_pyramid(name: str, quiet: bool = False, clean: bool = False) -> None:
     """Pre-build every lower-zoom tile for a capture (one-time, so the UI is instant)."""
-    mp = CAPTURES / name / "manifest.json"
+    mp = capture_dir(name) / "manifest.json"
     m = json.loads(mp.read_text(encoding="utf-8"))
     native, r = int(m["zoom"]), m["tile_range"]
     total = 0
@@ -700,8 +793,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/captures":
                 self._json(list_captures())
             elif path.startswith("/api/captures/"):
-                mp = CAPTURES / path[len("/api/captures/"):] / "manifest.json"
-                if mp.exists() and CAPTURES in mp.resolve().parents:
+                mp = capture_dir(path[len("/api/captures/"):]) / "manifest.json"
+                if mp.exists() and any(root in mp.resolve().parents for root in capture_dirs()):
                     self._send(200, mp.read_bytes(), "application/json")
                 else:
                     self._json({"error": "unknown capture"}, 404)
@@ -721,11 +814,26 @@ class Handler(BaseHTTPRequestHandler):
                 self._frames_index(parsed.query)
             elif path == "/api/sim":
                 self._json(sim_status())
+            elif path == "/api/sim/frame":
+                q = parse_qs(parsed.query or "")
+                try:
+                    frame = sim_frame((q.get("run") or ["diversion"])[0], int((q.get("step") or ["0"])[0]))
+                except (ValueError, KeyError) as e:
+                    frame = None
+                    print(f"  sim frame failed: {e}", flush=True)
+                if frame:
+                    self._json(frame)
+                else:
+                    self._json({"error": "no such step"}, 404)
             elif path.startswith("/sim/"):
                 name = path[len("/sim/"):].removesuffix(".json")
                 f = sim_dir() / f"{name}.json"
-                if name in SIM_RESULTS and f.exists():
-                    self._send(200, f.read_bytes(), "application/json")
+                try:
+                    body = f.read_bytes() if name in SIM_RESULTS + SIM_LIVE + SIM_LOCAL else None
+                except OSError:                 # being replaced this instant: the next poll gets it
+                    body = None
+                if body:
+                    self._send(200, body, "application/json")
                 else:
                     self._json({"error": "no such result"}, 404)
             elif path.startswith("/frame/"):
@@ -754,18 +862,20 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    global CAPTURES, OUTPUT, MODEL, GRAPH, WEIGHTS
+    global CAPTURES, OUTPUT, MODEL, GRAPH, WEIGHTS, CAPTURE_DIRS, WEIGHT_DIRS
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8765)
-    ap.add_argument("--captures", type=Path, default=CAPTURES)
+    ap.add_argument("--captures", type=Path, nargs="+", default=[CAPTURES],
+                    help="one or more captures folders, shown as one timeline")
     ap.add_argument("--output", type=Path, default=OUTPUT)
-    ap.add_argument("--weights", type=Path,
+    ap.add_argument("--weights", type=Path, nargs="+",
                     help="processed weight tables, <capture>.csv.gz "
-                         "(default: a 'weights' folder beside the captures)")
+                         "(default: a 'weights' folder beside each captures folder)")
     ap.add_argument("--build-pyramid", metavar="CAPTURE", help="pre-build lower zooms for a capture and exit")
     args = ap.parse_args()
-    CAPTURES, OUTPUT = args.captures.resolve(), args.output.resolve()
-    WEIGHTS = (args.weights or CAPTURES.parent / "weights").resolve()
+    CAPTURE_DIRS = [c.resolve() for c in args.captures]
+    WEIGHT_DIRS = [w.resolve() for w in (args.weights or [c.parent / "weights" for c in CAPTURE_DIRS])]
+    CAPTURES, OUTPUT, WEIGHTS = CAPTURE_DIRS[0], args.output.resolve(), WEIGHT_DIRS[0]
     capture_zoom.cache_clear()
     MODEL = model_mod.discover(OUTPUT)
     GRAPH = graph_mod.discover(OUTPUT)
@@ -785,10 +895,11 @@ def main() -> int:
     threading.Thread(target=prewarm, daemon=True).start()
 
     print(f"\n  TRACK visualizer  ->  http://127.0.0.1:{args.port}", flush=True)
-    print(f"  captures: {', '.join(c['name'] for c in caps) or 'none'}  ({CAPTURES})", flush=True)
+    print(f"  captures: {len(caps)} in {', '.join(map(str, CAPTURE_DIRS))}", flush=True)
     print(f"  layers:   {len(list_layers())} geojson  ({OUTPUT})", flush=True)
     done, stale = processed_index(caps)
-    print(f"  weights:  {len(done)} processed, {len(stale)} from the old model  ({WEIGHTS})", flush=True)
+    print(f"  weights:  {len(done)} processed, {len(stale)} from the old model  "
+          f"({', '.join(map(str, WEIGHT_DIRS))})", flush=True)
     mi = MODEL.info()
     if mi.get("ready"):
         print(f"  model:    {mi['edges']} edges -> {mi['lines']} lines "

@@ -169,6 +169,22 @@ export const map = new maplibregl.Map({
 });
 window.__map = map;
 
+/* The basemap comes from CARTO over the internet. If it never arrives (CARTO
+   down, venue wifi) the map never fires "load" and nothing else starts: the
+   page sat blank with no captures. So after BASEMAP_WAIT_MS the map switches to
+   a plain background and carries on; the traffic and every layer still draw. */
+const BASEMAP_WAIT_MS = 8000;
+const PLAIN_STYLE = {
+  version: 8, sources: {},
+  glyphs: "https://tiles.basemaps.cartocdn.com/fonts/{fontstack}/{range}.pbf",
+  layers: [{ id: "plain", type: "background", paint: { "background-color": "#efefec" } }],
+};
+setTimeout(() => {
+  if (map.isStyleLoaded()) return;
+  console.warn(`basemap did not load in ${BASEMAP_WAIT_MS / 1000} s: using a plain background`);
+  map.setStyle(PLAIN_STYLE);
+}, BASEMAP_WAIT_MS);
+
 /* ═════════════════════════ safety helpers ═════════════════════════ */
 
 export const warnings = [];

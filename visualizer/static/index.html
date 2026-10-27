@@ -254,6 +254,7 @@
       <div class="grouphead"><h3>Running now</h3></div>
       <p class="hint facts" id="simStatus">checking…</p>
       <div class="simbar"><i id="simBar"></i></div>
+      <div class="simout simlive" id="simLive"></div>
     </div>
 
     <div class="group">
@@ -268,7 +269,8 @@
     <div class="group">
       <div class="grouphead"><h3>2 · City simulation</h3></div>
       <p class="hint">Thousands of A* searches across Dhaka. The same trips are routed all at once, then in
-        batches that each see the jams the last ones made.</p>
+        batches that each see the jams the last ones made. The map shows it live: each new route, then
+        the roads filling as each batch lands. 2,000 trips take about 10 minutes; a few hundred suit a live demo.</p>
       <div class="rows">
         <label class="row"><span>Day</span><select id="simDay">
           <option value="sunday">Sunday</option><option value="monday">Monday</option>
@@ -299,6 +301,21 @@
       </div>
       <button class="btn" id="simRunChanges">Find road changes</button>
       <div class="simout" id="simChanges"></div>
+    </div>
+
+    <div class="group">
+      <div class="grouphead"><h3>4 · Diversion over time</h3></div>
+      <p class="hint">Two timelines from the capture on the map: <b>Actual</b>, what Google recorded, and
+        <b>With TRACK</b>, the same traffic at each moment with a coordinator steering it around the jams.
+        Only the routes differ, so the two can be compared at any time. Pick a moment on the timeline, then run.</p>
+      <div class="rows">
+        <div class="row"><span>Start from</span><em id="simDivStart">—</em></div>
+        <label class="row"><span>Run for</span><select id="simDivMinutes">
+          <option value="30">30 minutes</option><option value="60">1 hour</option>
+          <option value="90" selected>1½ hours</option><option value="120">2 hours</option></select></label>
+      </div>
+      <button class="btn" id="simRunDiversion">Run from this moment</button>
+      <div class="simout" id="simDiversion"></div>
     </div>
   </section>
 

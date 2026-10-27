@@ -135,6 +135,7 @@ export function bindControls() {
     document.querySelectorAll(".tabs button").forEach((o) => o.classList.toggle("on", o === b));
     document.querySelectorAll(".tabpanel")
       .forEach((p) => p.classList.toggle("on", p.dataset.panel === b.dataset.tab));
+    window.dispatchEvent(new Event("tabchange"));       // layers tied to a tab show or hide
   });
   document.querySelectorAll("#theme button").forEach((b) => b.onclick = () => setTheme(b.dataset.theme));
   $("dockBtn").onclick = () => document.body.classList.toggle("dock-hidden");

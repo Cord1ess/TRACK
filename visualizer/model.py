@@ -368,19 +368,25 @@ class ModelData:
         with self.lock:
             return self.lines_version, int(self.lines.shape[0]), self.parts
 
-    def frame(self, path: Path) -> dict:
+    def frame(self, path: Path, levels: np.ndarray | None = None) -> dict:
         """One capture's colours, one character per line in line order.
 
         Built from that capture's own weight table with the same rule the full
         payload uses to merge a two-way pair: a measured direction beats a
         predicted one, then the busier wins, then the first seen. Each character
-        is "0".."7": the level (0 green .. 3 dark red), plus 4 when predicted."""
+        is "0".."7": the level (0 green .. 3 dark red), plus 4 when predicted.
+
+        levels, if given (one level per edge id), replaces the table's colours:
+        a simulated version of this capture keeps which roads Google painted,
+        so only the colours differ from the real one."""
         self.ensure()
         with self.lock:
             lines, version = self.lines, self.lines_version
         if not lines.size:
             raise ValueError("no model data to build frames against")
         ids, w, obs, slot = read_weights(path)
+        if levels is not None:
+            w = LEVELS[np.asarray(levels)[ids]]
         size = int(max(ids.max(initial=0), lines.max(initial=0))) + 1
         W = np.zeros(size)
         O = np.zeros(size, dtype=bool)

@@ -12,7 +12,11 @@
    small share of roads change level, and only those are touched.
 
    A capture with no frame is not processed. The model is hidden for it rather
-   than left showing another moment's traffic under this one's timestamp. */
+   than left showing another moment's traffic under this one's timestamp.
+
+   A simulation can stand in for one capture's real colours (the diversion's
+   "with TRACK" timeline): setOverride(name, codes) makes showFrame paint those
+   codes whenever that capture is shown, and only that capture. */
 
 import { $, LADDER, RAMP, attempt, clock12, dayLabel, escapeHtml, map, sourceId, state } from "./core.js";
 import { SITE, STATIC, getManifest, loadManifest } from "./api.js";
@@ -25,6 +29,7 @@ const fr = state.frames;
 const cache = new Map();        // name -> {codes: Uint8Array, stats}
 const inflight = new Map();     // name -> Promise
 let applied = null;             // codes currently on the map, or null
+let override = null;            // {name, codes}: a simulated frame standing in for one capture
 let appliedFor = "";            // the lines version they were applied under
 
 /* ── the index: which captures are processed ─────────────────────────────── */
@@ -116,6 +121,20 @@ function clearApplied() {
   }
 }
 
+/** Show these codes (a string, one character per line) instead of this
+    capture's real colours, until clearOverride(). Codes built for another
+    line list are refused. */
+export function setOverride(name, codes, version) {
+  if (version !== fr.v || !codes || codes.length !== fr.lines) { override = null; return false; }
+  const out = new Uint8Array(codes.length);
+  for (let n = 0; n < codes.length; n++) out[n] = codes.charCodeAt(n) - 48;
+  override = { name, codes: out };
+  return true;
+}
+
+export function clearOverride() { override = null; }
+export const overrideFor = () => (override ? override.name : "");
+
 /** Called when a model source is (re)created: its feature state starts empty. */
 export function sourcesReset() {
   applied = null;
@@ -156,7 +175,7 @@ export async function showFrame(name) {
     renderModelInfo();
     return false;
   }
-  const f = await getFrame(name);
+  const f = override && override.name === name ? { codes: override.codes } : await getFrame(name);
   if (seq !== showSeq) return false;           // a newer request has taken over
   if (!f) {
     fr.hidden = true;
