@@ -34,5 +34,9 @@ week1/
 week2/
 
 
-# Report and presentation drafts (week 2 numbers are still estimates)
+# Course reports and templates: they carry student names and IDs
+docs/report/
 docs/*.docx
+
+# batch.py working folders, one per worker
+algorithms/_batch/

@@ -31,6 +31,7 @@ algorithms/
     simulation/      demand.py       the gravity model: who travels where
                      assignment.py   routing many trips with A*, all at once or in batches
                      city.py         the city-wide experiment
+                     diversion.py    the real traffic over time, steered around jams
     planning/        csp.py          the CSP solver: backtracking with forward checking
                      road_changes.py the street changes for one area, as a CSP
     progress.py      tells the map which algorithm is running
@@ -46,9 +47,11 @@ algorithms/
 | | `simulate.py forecast` | K-means, KNN, logistic regression, two baselines |
 | | `simulate.py city` | KNN forecast, BPR, gravity model, A* (thousands), assignment |
 | After a city run | `simulate.py changes` | CSP, then A* to score each layout |
+| From any capture | `simulate.py diversion` | A* detours, the coordinator, over the real captures that follow |
 
-The map's **Simulate** tab runs the last three and shows which algorithm is running
-and how far it has got.
+The map's **Simulate** tab runs these and shows them live: the routes A* has just
+found, the roads filling as each batch lands, the layout the CSP is scoring, and the
+diversion's two timelines on the main map.
 
 ---
 
@@ -139,7 +142,7 @@ Groups the captures into traffic **scenarios** without being told the time.
    until nothing moves.
 3. Describe each group by the times it contains.
 
-**Show:** the scenarios list. In week 1 the lightest group was mostly 2-5 am and the
+**Show:** the scenarios list. Over both weeks the lightest group is mostly 2-5 am and the
 heaviest mostly 6-8 pm, found from the traffic alone.
 
 ## 8. KNN — `ml/knn.py`, used in `forecast/predict.py`
@@ -165,12 +168,12 @@ Scored only on roads Google painted, because those are real readings.
 | Forecaster | Right level | Too green |
 |---|---|---|
 | always clear (floor) | 65.8 % | 34.2 % |
-| same time last week (baseline) | 74.0 % | 15.1 % |
-| **KNN** | **83.8 %** | **7.3 %** |
-| logistic regression | 78.8 % | 13.7 % |
+| same time last week (baseline) | 81.7 % | 9.2 % |
+| **KNN** | **84.0 %** | **7.8 %** |
+| logistic regression | 79.0 % | 14.6 % |
 
-*Week 1 only (874 captures to learn, 106 to test, Sep 22-24). With week 2 processed,
-the test becomes a true week-ahead forecast: learn week 1, forecast week 2.*
+*Learn week 1, forecast week 2: 1,198 captures to learn, every third of the following
+week's captures to test (448), 4,573,495 real readings scored.*
 
 ## 11. The gravity model — `simulation/demand.py`
 
@@ -222,6 +225,39 @@ Which street changes would help Farmgate or Mohakhali.
 **Show:** Simulate → Road changes. The tab counts the search (choices tried, values
 crossed out, dead ends, valid layouts) and draws the best layout on the map.
 
+## 14. Diversion over time — `simulation/diversion.py`
+
+What if the traffic Google recorded had been steered around the jams? Two timelines
+run through the real captures from a chosen moment, for an hour or two:
+
+- **Actual:** what Google recorded at each capture.
+- **With TRACK:** the same amount of traffic at each moment (it always comes from the
+  real capture, so rush hour builds and fades as it did), but a coordinator moves some
+  of it off the jams.
+
+Each step (three per capture interval):
+
+1. **Jams:** a run of red or dark red main roads, up to 1 km. The first time it jams,
+   A* finds the fastest way around it within 800 m: its detour.
+2. **Moving:** worst jam first, the coordinator moves 10 % of the stretch's traffic onto
+   the detour, or back, only if that lowers the city's total vehicle-hours, and never
+   fills a detour road past yellow. A car leaving a dark red road saves time for
+   everyone still on it, which is why the whole city is counted, not one driver.
+3. **Loads:** actual traffic, minus what left each stretch, plus what joined each
+   detour; every road recoloured. Vehicles are conserved.
+
+**Result, Tuesday 7 pm to 8:30 pm, both weeks:** about 6,000 vehicles an hour moved,
+400-530 roads change colour at some point, total time 0.03-0.04 % lower. At rush hour
+the way around one jammed main road almost always runs along another, and the side
+streets beside a jam carry its colour, so Dhaka's street network has little room to
+absorb its traffic. Rerouting alone cannot clear the evening peak.
+
+**Show:** pick a moment on the timeline, Simulate → Diversion over time. The main map
+plays the with-TRACK timeline as it is computed; afterwards switch Actual / With TRACK
+at any step, with the roads that differ outlined.
+**Test:** `tests/test_diversion.py` (traffic leaves the jam, every vehicle arrives,
+detour stays yellow, total time falls).
+
 ## The demo, in order
 
 1. The timeline plays a week of Dhaka's real traffic.
@@ -229,3 +265,5 @@ crossed out, dead ends, valid layouts) and draws the best layout on the map.
 3. One A* route bends around a jam.
 4. City simulation: the same trips all at once against in batches, replayed on the map.
 5. CSP: the best street changes for Farmgate and Mohakhali, drawn on the map.
+6. Diversion: Tuesday 7 pm, Actual against With TRACK on one clock, and why the
+   evening peak cannot be rerouted away.

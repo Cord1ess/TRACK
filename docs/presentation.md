@@ -1,5 +1,7 @@
 # TRACK: talking points
 
+Two weeks of data, 16 September to 1 October 2026. Every number here is measured.
+
 ## 1. Title
 
 TRACK. Traffic Route optimization using A* search, Clustering and KNN.
@@ -7,75 +9,65 @@ A data-driven approach to congestion-aware traffic optimization in Dhaka.
 
 ## 2. The problem
 
-- Dhaka traffic is unbalanced: some roads jammed, roads next to them empty.
-- There is no public traffic dataset for Bangladesh. Google shows traffic but gives no data.
-- Sending everyone to the best road moves the jam instead of removing it.
+- No open traffic feed for Bangladesh; TomTom and HERE do not cover it; Google shows traffic but gives no data.
+- Congestion is uneven: jammed arterials next to quieter streets.
+- Sending everyone down the fastest road moves the jam instead of removing it.
 
-## 3. The idea
+## 3. The data we built
 
-- Read the traffic Google shows, for the whole city, every few minutes.
-- Give every road a number, including the roads Google never paints.
-- Route trips in batches so each batch avoids what the last one filled. The city thins out instead of moving the jam.
+- 2,542 captures of the whole metro area, every 8 minutes (median), for 14.5 days.
+- 12.5 million map tiles, 10.1 billion traffic pixels classified, 100 % tile coverage on every capture, longest gap 19 minutes.
+- Fully automated on GitHub Actions; every capture archived to Hugging Face.
 
-## 4. The data, live
+## 4. From pixels to a city model
 
-- Google's tile server returns the traffic layer as a transparent tile with no API key. 4,928 tiles cover the metro area in about 1 minute.
-- A GitHub Actions workflow captures about every 7 minutes, runs the pipeline and publishes the map. Each run starts the next, so the chain sets the pace rather than a clock. The page updates itself without a reload.
-- Every capture is archived. Show the site.
+- Road graph from OpenStreetMap: 48,413 junctions, 110,382 directed roads, 8,302 km.
+- Decoder: every 5 m, 4 px to the left of travel (Bangladesh drives on the left), majority colour. Left side observes 72 % of major roads, right side 47 %.
+- Spread: Google paints 9 % of roads; the nearest painted road along the network decides, one level milder per junction.
+- 280.6 million road-level values over the two weeks.
 
-## 5. From pixels to a city model
+## 5. What the data shows
 
-1. Road graph from OpenStreetMap: 48,413 junctions, 110,382 directed edges, 8,302 km, no edge longer than 150 m.
-2. Decoder: each edge is sampled along its length and read from the tiles on the left of travel, the side Bangladesh drives on. Weight: green 25, yellow 55, red 85, dark red 105.
-3. Imputation: Google paints about a tenth of the network. Every other road is predicted from its nearest observed roads with KNN, one level quieter when it is a smaller road, faded to a K-means zone average far from any data.
-4. Every road now has a cost, so a router can leave a jammed arterial for the side streets.
+- 7 pm is the worst hour in both weeks: 29 % of painted roads red or dark red. 6 am: 10 %.
+- Weekends are lighter by day (15 % at noon against 21 % on weekdays).
+- Slow means stopped: dark red 13 % of readings, red 4 %.
 
-## 6. The algorithms, each on the map
+## 6. K-means
 
-- Decoder: which roads were read, and how much of each.
-- Imputation: how each road got its weight.
-- K-means: the zones.
-- KNN: a fifth of the observed roads hidden and predicted; error 6 points on a scale of 80, right level 85 % of the time.
-- Logistic regression: the traffic level of every road from position, class and neighbours; 91 % hold-out accuracy, the same as KNN on the same features.
-- Dijkstra: minutes from Shahbagh to every road, one run.
-- A*: six routes across the city on an empty network and on today's traffic.
-- Gravity model: trips between 36 zones, busier zones make and attract more.
-- Assignment: 300 new trips. All at once, 617 roads over capacity. In ten batches with feedback, 496. Before the trips, 263.
+Five scenarios from the traffic alone, across all 2,542 captures: the small hours, light, the morning, the working afternoon, and the 6-8 pm peak.
 
-## 7. Why the costs matter
+## 7. KNN, a week ahead
 
-- The BPR function turns volume over capacity into travel time. The textbook setting makes the four traffic levels differ by under 20 %, and a router then ignores traffic.
-- TRACK sets it so a dark red road runs at a quarter of its free-flow speed. Green 1.01 times free flow, yellow 1.23, red 2.29, dark red 4.
-- Each batch of trips is routed with A* on the current costs, then the costs are recomputed. Later batches go around what earlier ones filled.
+Learn week 1, forecast week 2, scored on 4.6 million real readings:
+KNN 84.0 % right (7.8 % too green), same time last week 81.7 %, logistic regression 79.0 %, always clear 65.8 %.
 
-## 8. Checked, not assumed
+## 8. City simulation
 
-- Which side of the road a direction's line is drawn on: measured. Left observes 72 % of major-road edges, right 47 %.
-- The assumption that a smaller road is quieter than the busy road beside it: measured on observed pairs. 15 points lower on average, lower in 62 % of pairs.
-- The imputation: hold-out on observed edges, four models compared.
-- The map itself: a browser suite of 22 scenarios checks every 60 ms that no road layer disappears.
+2,000 trips × 10 vehicles, Tuesday 7 pm, 2,529 A* searches. Routed in batches with load feedback, the trips add 33 % less delay and the average trip is 38 % shorter than everyone taking the same fastest road. The result holds under three colour scales (30-36 %).
 
-## 9. What is built
+## 9. CSP
 
-- Collection, graph, decoder, imputation, all algorithms with tests, one map layer each, the map with live weight tuning, the workflow and the site.
+698 valid street layouts around Farmgate and Mohakhali, each simulated with A*. In Mohakhali, closing the U-turn gap on Bir Uttam Ziaur Rahman Road saves 1.1 %. In Farmgate no layout is measurably better on the two-week forecast (−7.1 % on week 1's): a plan is a lead, not a recommendation.
 
-## 10. What is next
+## 10. Diversion over time
 
-- Scenarios over time: the workflow now produces a capture about every 7 minutes; K-means over days of captures gives rush hour, off-peak and weekend patterns, and KNN against logistic regression per time of day.
-- The animated assignment run, and personal A-to-B routing on predicted costs.
-- Signal timing as a constraint problem, optional.
+Tuesday 7 pm to 8:30 pm, Actual against With TRACK on one clock: the same traffic at each moment, steered around jams by a coordinator. About 6,000 vehicles an hour move and total time falls 0.03-0.04 %. Only 17 of 400 detours were faster than the jam: the way around one jammed main road runs along another. Dhaka's evening congestion is a capacity problem, not a routing one.
 
-## 11. Who would use it
+## 11. Live demo
 
-- Traffic police: advisories with times. Corridor X saturates at 5 pm, start diverting at 4:30.
-- Fleets and ride sharing: many vehicles under central control can follow assigned routes.
-- Planners: test a one-way scheme or a link road in the model before building it.
+1. The timeline plays two weeks of real traffic.
+2. City simulation: the newest A* routes in blue, roads filling batch by batch.
+3. CSP: each layout as it is scored, with its routes and the best so far.
+4. Diversion: pick 7 pm, run, switch Actual / With TRACK at 8:30.
+
+Start the map with both weeks: `python server.py --captures ../week1/captures ../week2/captures`.
+If the internet basemap does not load within 8 s the map continues on a plain background.
 
 ## 12. Questions to expect
 
-- Where is the data from? Google's traffic layer, read about every 7 minutes; OpenStreetMap for the roads.
-- Is that allowed? Google's terms forbid storing their tiles. The owner accepted the risk for academic use.
-- Won't rerouting create new jams? Yes if everyone is routed at once. Batches with cost feedback are the fix, and the numbers show it: 617 against 496.
+- Where is the data from? Google's traffic layer every 8 minutes; OpenStreetMap for the roads.
+- Is that allowed? Google's terms forbid storing their tiles; the owner accepted the risk for academic use.
+- Won't rerouting create new jams? Yes if everyone is sent at once; batches with cost feedback fix that (33 %).
+- Then why doesn't the diversion clear 7 pm? Because the alternatives are jammed too: there is no spare road nearby.
 - How do you get trips without vehicle data? A gravity model between zones, weighted by observed traffic.
-- Why A* and not Dijkstra? Trips are point to point; A* searches toward the destination. Dijkstra is for one to everything, and the map has that too.
-- Does every car avoid jams? No. Traffic becomes balanced, not gone.
+- Why 25 / 55 / 85 / 105? Volume over capacity per colour. Tested against two other scales: the batching result holds, the street-change size does not.

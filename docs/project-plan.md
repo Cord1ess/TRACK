@@ -104,6 +104,10 @@ manifest changes.
 | Models across time | K-means scenarios over all captures; KNN and logistic regression forecasts tested on captures they never saw | done (`simulate.py forecast`) |
 | City simulation | gravity trips routed with A* all at once and in batches on a forecast, replayed on the map | done (`simulate.py city`, Simulate tab) |
 | Road changes | CSP over street and U-turn changes in Farmgate and Mohakhali, scored with A* | done (`simulate.py changes`, Simulate tab) |
+| Diversion over time | the real traffic from any capture, actual against steered around jams, on one clock | done (`simulate.py diversion`, Simulate tab) |
+| Two weeks of data | 2,542 captures, 16 Sep - 1 Oct 2026, all processed; the map shows both weeks as one timeline | done |
+| Live simulation | routes, batches, CSP layouts and the diversion drawn on the map while they run | done |
+| Collection | stopped after 1 October 2026; every GitHub workflow disabled on 27 October 2026 when the course project ended | closed |
 
 ## 5. Risks
 
